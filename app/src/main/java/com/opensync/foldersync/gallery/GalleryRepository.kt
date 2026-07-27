@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import com.opensync.foldersync.files.Clipboard
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.ExplorerRepository
 import com.opensync.foldersync.provider.RemoteFile
@@ -123,6 +124,23 @@ class GalleryRepository(private val context: Context) {
         val rf = item.remoteFile ?: throw IllegalStateException("Not a provider item")
         return explorer.materialize(rf)
     }
+
+    // ---- File operations (folder-based sources) — same engine as the Files explorer ----
+
+    val providerLocation: ExplorerLocation get() = explorer.location
+
+    suspend fun createFolder(parentRel: String, name: String) = explorer.createFolder(parentRel, name)
+
+    suspend fun rename(item: RemoteFile, newName: String) = explorer.rename(item, newName)
+
+    suspend fun delete(items: List<RemoteFile>) = explorer.delete(items)
+
+    suspend fun paste(
+        clip: Clipboard,
+        destDir: String,
+        onProgress: (String) -> Unit,
+        isCancelled: () -> Boolean
+    ) = explorer.paste(clip, destDir, onProgress, isCancelled)
 
     fun release() = explorer.release()
 }

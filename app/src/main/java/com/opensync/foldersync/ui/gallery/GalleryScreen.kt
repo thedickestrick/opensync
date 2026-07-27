@@ -4,11 +4,14 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -27,24 +31,37 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -101,54 +118,74 @@ fun GalleryScreen(
     }
 
     var sortMenuOpen by remember { mutableStateOf(false) }
+    var showNewFolder by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     BackHandler(enabled = state.canBack) { vm.back() }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (state.canBack) {
-                        IconButton(onClick = { vm.back() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    } else {
-                        IconButton(onClick = openDrawer) { Icon(Icons.Filled.Menu, contentDescription = "Menu") }
-                    }
-                },
-                title = {
-                    GallerySourceSelector(
-                        label = if (state.inAlbum) state.title else state.sourceLabel,
-                        accounts = accounts,
-                        onPick = vm::setSource
-                    )
-                },
-                actions = {
-                    // Sorting applies to the album grid (device source, not inside an album).
-                    if (state.source is GallerySource.Device && !state.inAlbum) {
-                        Box {
-                            IconButton(onClick = { sortMenuOpen = true }) {
-                                Icon(Icons.Filled.Sort, contentDescription = "Sort albums")
+            if (state.inSelectionMode) {
+                GallerySelectionBar(
+                    count = state.selection.size,
+                    canRename = state.selection.size == 1,
+                    onClose = vm::clearSelection,
+                    onCopy = vm::copySelected,
+                    onCut = vm::cutSelected,
+                    onDelete = { showDeleteConfirm = true },
+                    onRename = { renameTarget = vm.singleSelected() },
+                    onSelectAll = vm::selectAll
+                )
+            } else {
+                TopAppBar(
+                    navigationIcon = {
+                        if (state.canBack) {
+                            IconButton(onClick = { vm.back() }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
-                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                                AlbumSort.entries.forEach { option ->
-                                    val marker = if (state.albumSort == option) {
-                                        if (state.albumAscending) " ↑" else " ↓"
-                                    } else ""
-                                    DropdownMenuItem(
-                                        text = { Text(option.label + marker) },
-                                        onClick = { vm.setAlbumSort(option); sortMenuOpen = false }
-                                    )
+                        } else {
+                            IconButton(onClick = openDrawer) { Icon(Icons.Filled.Menu, contentDescription = "Menu") }
+                        }
+                    },
+                    title = {
+                        GallerySourceSelector(
+                            label = if (state.inAlbum) state.title else state.sourceLabel,
+                            accounts = accounts,
+                            onPick = vm::setSource
+                        )
+                    },
+                    actions = {
+                        if (state.source is GallerySource.Device && !state.inAlbum) {
+                            Box {
+                                IconButton(onClick = { sortMenuOpen = true }) {
+                                    Icon(Icons.Filled.Sort, contentDescription = "Sort albums")
+                                }
+                                DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                                    AlbumSort.entries.forEach { option ->
+                                        val marker = if (state.albumSort == option) {
+                                            if (state.albumAscending) " ↑" else " ↓"
+                                        } else ""
+                                        DropdownMenuItem(
+                                            text = { Text(option.label + marker) },
+                                            onClick = { vm.setAlbumSort(option); sortMenuOpen = false }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
+                )
+            }
+        },
+        floatingActionButton = {
+            if (state.isProvider && !state.inSelectionMode && state.viewerIndex == null) {
+                FloatingActionButton(onClick = { showNewFolder = true }) {
+                    Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
                 }
-            )
+            }
         }
     ) { inner ->
-        // Apply the top inset (below the app bar) but let the grid run to the bottom edge, behind
-        // the transparent nav bar; the bar height is handed to the grid as scroll padding.
         Column(
             Modifier.padding(top = inner.calculateTopPadding()).fillMaxSize()
         ) {
@@ -159,11 +196,27 @@ fun GalleryScreen(
             }
 
             state.error?.let {
-                Text(
-                    it,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(12.dp)
+                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+            }
+
+            if (state.hasClipboard) {
+                GalleryActionBar(
+                    text = "Clipboard ready",
+                    confirmLabel = "Paste here",
+                    onConfirm = vm::paste,
+                    onCancel = vm::clearClipboard
                 )
+            }
+
+            state.busyMessage?.let { msg ->
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(msg, style = MaterialTheme.typography.bodyMedium)
+                }
             }
 
             val showAlbums = state.source is GallerySource.Device && !state.inAlbum
@@ -179,9 +232,13 @@ fun GalleryScreen(
                         folders = state.folders,
                         media = state.media,
                         thumbs = thumbs,
+                        selection = state.selection,
+                        selectionMode = state.inSelectionMode,
                         bottomInset = inner.calculateBottomPadding(),
                         onOpenFolder = vm::openFolder,
-                        onOpenMedia = vm::openViewer
+                        onOpenMedia = vm::openViewer,
+                        onToggleFolder = { folder -> vm.toggleSelect(folder.relPath) },
+                        onToggleMedia = { item -> item.remoteFile?.let { vm.toggleSelect(it.relPath) } }
                     )
                 }
             }
@@ -196,6 +253,99 @@ fun GalleryScreen(
             materialize = { vm.materialize(it) }
         )
     }
+
+    if (showNewFolder) {
+        GalleryTextDialog("New folder", "", "Create", onDismiss = { showNewFolder = false }) { name ->
+            vm.newFolder(name); showNewFolder = false
+        }
+    }
+    renameTarget?.let { target ->
+        GalleryTextDialog("Rename", target.name, "Rename", onDismiss = { renameTarget = null }) { name ->
+            vm.renameItem(target, name); renameTarget = null
+        }
+    }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete ${state.selection.size} item(s)?") },
+            text = { Text("This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirm = false; vm.deleteSelected() }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GallerySelectionBar(
+    count: Int,
+    canRename: Boolean,
+    onClose: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onDelete: () -> Unit,
+    onRename: () -> Unit,
+    onSelectAll: () -> Unit
+) {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+        },
+        title = { Text("$count selected") },
+        actions = {
+            if (canRename) {
+                IconButton(onClick = onRename) {
+                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
+                }
+            }
+            IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
+            IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
+            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
+            IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
+        }
+    )
+}
+
+@Composable
+private fun GalleryActionBar(text: String, confirmLabel: String, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(text, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSecondaryContainer)
+            OutlinedButton(onClick = onCancel) { Text("Cancel") }
+            TextButton(onClick = onConfirm) { Text(confirmLabel) }
+        }
+    }
+}
+
+@Composable
+private fun GalleryTextDialog(
+    title: String,
+    initial: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true,
+                modifier = Modifier.fillMaxWidth())
+        },
+        confirmButton = {
+            TextButton(onClick = { if (text.isNotBlank()) onConfirm(text.trim()) }, enabled = text.isNotBlank()) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -267,14 +417,19 @@ private fun AlbumGrid(albums: List<Album>, bottomInset: Dp, onOpen: (Album) -> U
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaGrid(
     folders: List<RemoteFile>,
     media: List<MediaItem>,
     thumbs: Map<String, File>,
+    selection: Set<String>,
+    selectionMode: Boolean,
     bottomInset: Dp,
     onOpenFolder: (RemoteFile) -> Unit,
-    onOpenMedia: (Int) -> Unit
+    onOpenMedia: (Int) -> Unit,
+    onToggleFolder: (RemoteFile) -> Unit,
+    onToggleMedia: (MediaItem) -> Unit
 ) {
     if (folders.isEmpty() && media.isEmpty()) {
         EmptyBox("No photos or videos here")
@@ -286,24 +441,53 @@ private fun MediaGrid(
         contentPadding = PaddingValues(start = 6.dp, top = 6.dp, end = 6.dp, bottom = 6.dp + bottomInset)
     ) {
         items(folders, key = { "f:${it.relPath}" }) { folder ->
+            val selected = folder.relPath in selection
             Column(
-                Modifier.padding(6.dp).clickable { onOpenFolder(folder) },
+                Modifier.padding(6.dp).combinedClickable(
+                    onClick = { if (selectionMode) onToggleFolder(folder) else onOpenFolder(folder) },
+                    onLongClick = { onToggleFolder(folder) }
+                ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(6.dp))
+                        .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(Icons.Filled.Folder, contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(16.dp))
+                    if (selected) SelectionCheck()
                 }
                 Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelMedium)
             }
         }
         itemsIndexed(media, key = { _, m -> "m:${m.key}" }) { index, item ->
-            Box(Modifier.padding(3.dp).clickable { onOpenMedia(index) }) {
+            val selected = item.remoteFile?.let { it.relPath in selection } ?: false
+            Box(
+                Modifier.padding(3.dp).combinedClickable(
+                    onClick = { if (selectionMode) onToggleMedia(item) else onOpenMedia(index) },
+                    onLongClick = { onToggleMedia(item) }
+                )
+            ) {
                 ThumbBox(model = item.thumbModel ?: thumbs[item.key], isVideo = item.isVideo)
+                if (selected) {
+                    Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.35f)))
+                    SelectionCheck()
+                }
             }
         }
     }
+}
+
+@Composable
+private fun BoxScope.SelectionCheck() {
+    Icon(
+        Icons.Filled.CheckCircle,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp)
+    )
 }
 
 @Composable
