@@ -73,6 +73,12 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Android 14+ requires the foreground-service type on WorkManager's service. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
         <!-- WorkManager is initialized manually in FolderSyncApp (Configuration.Provider),
              so disable the default initializer. -->
         <provider
