@@ -23,7 +23,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -34,16 +33,19 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,6 +66,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,20 +87,27 @@ import java.io.File
 
 enum class NoteKind { PDF, RAW, TEXT, IMAGE, OTHER }
 
-data class NoteEntry(val name: String, val path: String, val isDir: Boolean, val kind: NoteKind?)
+data class NoteEntry(
+    val name: String,
+    val path: String,
+    val isDir: Boolean,
+    val kind: NoteKind?,
+    val subDir: String = ""
+)
 
 data class NotesState(
     val rootDir: String = "",
     val currentDir: String = "",
     val entries: List<NoteEntry> = emptyList(),
     val loading: Boolean = false,
+    val includeSub: Boolean = true,
     val selection: Set<String> = emptySet(),
     val clipboard: List<String> = emptyList(),
     val clipboardCut: Boolean = false,
     val error: String? = null
 ) {
     val selectionMode get() = selection.isNotEmpty()
-    val canGoUp get() = currentDir.isNotBlank() && currentDir != rootDir
+    val canGoUp get() = !includeSub && currentDir.isNotBlank() && currentDir != rootDir
 }
 
 class NotesViewModel : ViewModel() {
@@ -129,16 +142,35 @@ class NotesViewModel : ViewModel() {
     }
 
     fun rescan() {
-        val dir = _state.value.currentDir
-        if (dir.isBlank()) return
-        _state.value = _state.value.copy(loading = true)
+        val s = _state.value
+        if (s.currentDir.isBlank()) return
+        _state.value = s.copy(loading = true)
         viewModelScope.launch {
-            val entries = withContext(Dispatchers.IO) { listDir(File(dir)) }
+            val entries = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
             _state.value = _state.value.copy(entries = entries, loading = false)
         }
     }
 
-    private fun listDir(dir: File): List<NoteEntry> {
+    fun toggleIncludeSub() {
+        _state.value = _state.value.copy(includeSub = !_state.value.includeSub, selection = emptySet())
+        rescan()
+    }
+
+    private fun listDir(dir: File, recursive: Boolean): List<NoteEntry> {
+        if (recursive) {
+            return dir.walkTopDown().maxDepth(8)
+                .filter { it.isFile }
+                .mapNotNull { f ->
+                    kindOf(f.name)?.let { k ->
+                        val sub = f.parentFile?.relativeToOrNull(dir)?.path
+                            ?.takeIf { it.isNotEmpty() && it != "." } ?: ""
+                        NoteEntry(f.name, f.absolutePath, false, k, sub)
+                    }
+                }
+                .take(4000)
+                .sortedWith(compareBy({ it.subDir.lowercase() }, { it.name.lowercase() }))
+                .toList()
+        }
         val files = dir.listFiles() ?: return emptyList()
         val dirs = files.filter { it.isDirectory }
             .map { NoteEntry(it.name, it.absolutePath, true, null) }
@@ -280,6 +312,8 @@ fun NotesScreen(
     openDrawer: () -> Unit,
     onOpenPdf: (String) -> Unit,
     onOpenNote: (String) -> Unit,
+    onNewNote: (String) -> Unit,
+    onEditNote: (String) -> Unit,
     vm: NotesViewModel = viewModel()
 ) {
     val state by vm.state.collectAsState()
@@ -288,9 +322,20 @@ fun NotesScreen(
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
 
     BackHandler(enabled = state.selectionMode || state.canGoUp) {
         if (state.selectionMode) vm.clearSelection() else vm.up()
+    }
+
+    // Refresh the list when returning to this screen (e.g. after creating/editing a note).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.rescan()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedErrorToast(state.error) { vm.dismissError() }
@@ -316,12 +361,33 @@ fun NotesScreen(
                     },
                     actions = {
                         if (state.rootDir.isNotBlank()) {
-                            IconButton(onClick = { vm.rescan() }) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+                            IconButton(onClick = { vm.toggleIncludeSub() }) {
+                                Icon(
+                                    Icons.Filled.UnfoldMore,
+                                    contentDescription = "Include subfolders",
+                                    tint = if (state.includeSub) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
-                        IconButton(onClick = { showRootPicker = true }) {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = "Change notes folder")
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("New folder") },
+                                    onClick = { menuOpen = false; showNewFolder = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Change notes folder") },
+                                    onClick = { menuOpen = false; showRootPicker = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Rescan") },
+                                    onClick = { menuOpen = false; vm.rescan() }
+                                )
+                            }
                         }
                     }
                 )
@@ -329,8 +395,9 @@ fun NotesScreen(
         },
         floatingActionButton = {
             if (state.rootDir.isNotBlank() && !state.selectionMode) {
-                FloatingActionButton(onClick = { showNewFolder = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "New folder")
+                ExtendedFloatingActionButton(onClick = { onNewNote(state.currentDir) }) {
+                    Icon(Icons.Filled.Edit, contentDescription = null)
+                    Text("  New note")
                 }
             }
         },
@@ -369,8 +436,8 @@ fun NotesScreen(
                     if (state.entries.isEmpty()) {
                         item {
                             Text(
-                                "Empty folder.\nExport notes from Samsung Notes (⋮ → Save as file) here, " +
-                                    "or copy .spd files in.",
+                                "No notes here yet.\nTap “New note” to write one, export from Samsung Notes " +
+                                    "(⋮ → Save as file) into this folder, or copy .spd files in.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(24.dp)
@@ -387,6 +454,7 @@ fun NotesScreen(
                                     state.selectionMode -> vm.toggle(entry.path)
                                     entry.isDir -> vm.openDir(entry.path)
                                     entry.kind == NoteKind.PDF -> onOpenPdf(entry.path)
+                                    entry.kind == NoteKind.TEXT -> onEditNote(entry.path)
                                     entry.kind == NoteKind.OTHER -> openWithSystem(context, File(entry.path))
                                     else -> onOpenNote(entry.path)
                                 }
@@ -462,9 +530,15 @@ private fun NoteRow(
             Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyLarge)
             Text(
-                if (entry.isDir) "Folder" else kindLabel(entry.kind),
+                when {
+                    entry.isDir -> "Folder"
+                    entry.subDir.isNotEmpty() -> "${kindLabel(entry.kind)}  •  ${entry.subDir}"
+                    else -> kindLabel(entry.kind)
+                },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         if (selectionMode && selected) {
@@ -547,11 +621,12 @@ private fun SetupCard(modifier: Modifier, onChoose: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Icon(Icons.Filled.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Text("Import your notes", style = MaterialTheme.typography.titleMedium)
+        Text("Your notes", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Pick the folder where your notes live. OpenSync reads PDF, text and image exports, and " +
-                "best-effort parses raw Samsung Notes (.spd/.sdoc) files — with full copy/move/delete controls.\n\n" +
-                "Tip: in Samsung Notes, ⋮ → Save as file → PDF or Text into this folder.",
+            "Pick a folder to keep your notes in. Then you can write new notes right here, and OpenSync " +
+                "will also read PDF/text/image exports and best-effort parse raw Samsung Notes (.spd/.sdoc) " +
+                "files — with full copy/move/delete controls.\n\n" +
+                "New notes are saved as Markdown (.md) text, so they sync through your backup pairs and open anywhere.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

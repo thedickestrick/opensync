@@ -37,9 +37,11 @@ import androidx.navigation.navArgument
 import com.opensync.foldersync.ui.accounts.AccountEditScreen
 import com.opensync.foldersync.ui.accounts.AccountsScreen
 import com.opensync.foldersync.pdf.PdfRequest
+import com.opensync.foldersync.notes.NoteEditRequest
 import com.opensync.foldersync.notes.NoteRequest
 import com.opensync.foldersync.ui.explorer.ExplorerScreen
 import com.opensync.foldersync.ui.gallery.GalleryScreen
+import com.opensync.foldersync.ui.notes.NoteEditorScreen
 import com.opensync.foldersync.ui.notes.NoteViewerScreen
 import com.opensync.foldersync.ui.notes.NotesScreen
 import com.opensync.foldersync.ui.pdf.PdfAnnotateScreen
@@ -97,11 +99,27 @@ fun AppRoot() {
                 NotesScreen(
                     openDrawer = openDrawer,
                     onOpenPdf = { p -> PdfRequest.path = p; navController.navigate("pdf") },
-                    onOpenNote = { p -> NoteRequest.path = p; navController.navigate("note_view") }
+                    onOpenNote = { p -> NoteRequest.path = p; navController.navigate("note_view") },
+                    onNewNote = { dir ->
+                        NoteEditRequest.path = null
+                        NoteEditRequest.dir = dir
+                        navController.navigate("note_edit")
+                    },
+                    onEditNote = { p ->
+                        NoteEditRequest.path = p
+                        NoteEditRequest.dir = null
+                        navController.navigate("note_edit")
+                    }
                 )
             }
             composable("note_view") {
                 NoteViewerScreen(onBack = { navController.popBackStack() })
+            }
+            composable("note_edit") {
+                NoteEditorScreen(
+                    onBack = { navController.popBackStack() },
+                    onSaved = { navController.popBackStack() }
+                )
             }
             composable("pdf") {
                 PdfViewerScreen(
