@@ -258,17 +258,19 @@ class NotesViewModel : ViewModel() {
         }
     }
 
-    /** Convert every raw Samsung Notes file currently listed into an editable .md note. */
+    /** Convert every PDF and raw Samsung Notes file currently listed into an editable .md note. */
     fun convertImported() {
-        val raws = _state.value.entries.filter { it.kind == NoteKind.RAW }.map { it.path }
-        if (raws.isEmpty()) {
-            _state.value = _state.value.copy(error = "No .spd/.sdoc notes here to convert")
+        val paths = _state.value.entries
+            .filter { it.kind == NoteKind.PDF || it.kind == NoteKind.RAW }
+            .map { it.path }
+        if (paths.isEmpty()) {
+            _state.value = _state.value.copy(error = "No PDF or Samsung Notes files here to convert")
             return
         }
         _state.value = _state.value.copy(loading = true)
         viewModelScope.launch {
             val made = withContext(Dispatchers.IO) {
-                raws.count { NoteConverter.toMarkdown(Graph.appContext, File(it)) != null }
+                paths.count { NoteConverter.toMarkdown(Graph.appContext, File(it)) != null }
             }
             _state.value = _state.value.copy(error = "Converted $made note(s) to editable .md")
             rescan()
@@ -399,7 +401,7 @@ fun NotesScreen(
                                     onClick = { menuOpen = false; showNewFolder = true }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Convert imported notes (.spd → .md)") },
+                                    text = { Text("Convert imported notes (PDF/.spd → editable)") },
                                     onClick = { menuOpen = false; vm.convertImported() }
                                 )
                                 DropdownMenuItem(
