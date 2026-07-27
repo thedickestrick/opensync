@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -36,8 +37,11 @@ import androidx.navigation.navArgument
 import com.opensync.foldersync.ui.accounts.AccountEditScreen
 import com.opensync.foldersync.ui.accounts.AccountsScreen
 import com.opensync.foldersync.pdf.PdfRequest
+import com.opensync.foldersync.notes.NoteRequest
 import com.opensync.foldersync.ui.explorer.ExplorerScreen
 import com.opensync.foldersync.ui.gallery.GalleryScreen
+import com.opensync.foldersync.ui.notes.NoteViewerScreen
+import com.opensync.foldersync.ui.notes.NotesScreen
 import com.opensync.foldersync.ui.pdf.PdfAnnotateScreen
 import com.opensync.foldersync.ui.pdf.PdfFormScreen
 import com.opensync.foldersync.ui.pdf.PdfPageOrganizerScreen
@@ -89,6 +93,16 @@ fun AppRoot() {
                 )
             }
             composable("gallery") { GalleryScreen(openDrawer = openDrawer) }
+            composable("notes") {
+                NotesScreen(
+                    openDrawer = openDrawer,
+                    onOpenPdf = { p -> PdfRequest.path = p; navController.navigate("pdf") },
+                    onOpenNote = { p -> NoteRequest.path = p; navController.navigate("note_view") }
+                )
+            }
+            composable("note_view") {
+                NoteViewerScreen(onBack = { navController.popBackStack() })
+            }
             composable("pdf") {
                 PdfViewerScreen(
                     onBack = { navController.popBackStack() },
@@ -193,6 +207,7 @@ private fun DrawerContent(currentRoute: String?, onNavigate: (String) -> Unit) {
             SectionLabel("Browse")
             DrawerRow("files", "Files", Icons.Filled.Folder, currentRoute, onNavigate)
             DrawerRow("gallery", "Gallery", Icons.Filled.PhotoLibrary, currentRoute, onNavigate)
+            DrawerRow("notes", "Notes", Icons.Filled.Description, currentRoute, onNavigate)
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionLabel("Backup")

@@ -14,8 +14,14 @@ class AppPrefs(context: Context) {
         get() = prefs.getString(KEY_REPO, "") ?: ""
         set(value) { prefs.edit().putString(KEY_REPO, value).apply() }
 
+    /** Folder the user keeps their notes (and Samsung Notes exports) in. */
+    var notesDir: String
+        get() = prefs.getString(KEY_NOTES_DIR, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_NOTES_DIR, value).apply() }
+
     private companion object {
         const val KEY_OWNER = "update_owner"
         const val KEY_REPO = "update_repo"
+        const val KEY_NOTES_DIR = "notes_dir"
     }
 }
