@@ -35,8 +35,10 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.opensync.foldersync.ui.accounts.AccountEditScreen
 import com.opensync.foldersync.ui.accounts.AccountsScreen
+import com.opensync.foldersync.pdf.PdfRequest
 import com.opensync.foldersync.ui.explorer.ExplorerScreen
 import com.opensync.foldersync.ui.gallery.GalleryScreen
+import com.opensync.foldersync.ui.pdf.PdfViewerScreen
 import com.opensync.foldersync.ui.logs.SyncLogScreen
 import com.opensync.foldersync.ui.pairs.FolderPairEditScreen
 import com.opensync.foldersync.ui.pairs.FolderPairsScreen
@@ -73,8 +75,17 @@ fun AppRoot() {
         }
     ) {
         NavHost(navController = navController, startDestination = "files") {
-            composable("files") { ExplorerScreen(openDrawer = openDrawer) }
+            composable("files") {
+                ExplorerScreen(
+                    openDrawer = openDrawer,
+                    onOpenPdf = { path ->
+                        PdfRequest.path = path
+                        navController.navigate("pdf")
+                    }
+                )
+            }
             composable("gallery") { GalleryScreen(openDrawer = openDrawer) }
+            composable("pdf") { PdfViewerScreen(onBack = { navController.popBackStack() }) }
             composable("pairs") {
                 FolderPairsScreen(
                     openDrawer = openDrawer,

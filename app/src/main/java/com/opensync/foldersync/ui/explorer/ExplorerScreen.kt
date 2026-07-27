@@ -85,6 +85,7 @@ import java.io.File
 @Composable
 fun ExplorerScreen(
     openDrawer: () -> Unit,
+    onOpenPdf: (String) -> Unit = {},
     vm: ExplorerViewModel = viewModel()
 ) {
     val state by vm.state.collectAsState()
@@ -97,7 +98,13 @@ fun ExplorerScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        vm.openFile.collect { file -> openWithSystem(context, file) }
+        vm.openFile.collect { file ->
+            if (file.extension.equals("pdf", ignoreCase = true)) {
+                onOpenPdf(file.absolutePath)
+            } else {
+                openWithSystem(context, file)
+            }
+        }
     }
     LaunchedEffect(state.error) {
         state.error?.let {
