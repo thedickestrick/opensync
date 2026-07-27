@@ -137,10 +137,12 @@ app/src/main/java/com/opensync/foldersync/
   large files (>15 MB) show an icon instead. Remote video thumbnails are skipped.
 - Videos play via an external player intent (no in-app player yet).
 - **SMB**: use SMB2/SMB3 (modern Windows/NAS). In the account, put the server IP/hostname,
-  your Windows **domain** (blank for a workgroup or local account), username, password, and set
-  the base path to `/<ShareName>` or `/<ShareName>/<subfolder>` (the first segment is the
-  share). SMB1/CIFS-only servers are not supported. On Android the full BouncyCastle provider
-  is installed at runtime because SMB 3.x signing needs AES-CMAC.
+  your Windows **domain** (blank for a workgroup or local account), username, password, and a
+  path. Leave the path **blank or `/`** to browse **all shares** on the server (enumerated over
+  SRVSVC), or set `/<ShareName>` / `/<ShareName>/<subfolder>` to pin one share. SMB1/CIFS-only
+  servers are not supported. On Android the full BouncyCastle provider is installed at runtime
+  because SMB 3.x signing needs AES-CMAC. (Share enumeration requires your account to have
+  permission to list shares on the server.)
 - SFTP uses `StrictHostKeyChecking=no`; WebDAV can't set remote mtimes (two-way sync
   compensates via its state database).
 - Self-update requires you to sign releases with a **consistent key**, or Android will refuse

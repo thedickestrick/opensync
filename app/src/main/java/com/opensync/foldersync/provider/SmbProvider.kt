@@ -12,6 +12,8 @@ import com.hierynomus.smbj.connection.Connection
 import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
 import com.opensync.foldersync.util.PathUtil
+import com.rapid7.client.dcerpc.mssrvs.ServerService
+import com.rapid7.client.dcerpc.transport.SMBTransportFactories
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.io.IOException
@@ -21,9 +23,11 @@ import java.util.concurrent.TimeUnit
 /**
  * SMB2 / SMB3 backend (Windows shares, NAS, domain servers) built on SMBJ.
  *
- * The provider root is `/<ShareName>/<optional/subfolder>`: the first path segment is the SMB
- * share to connect to, the rest is the starting folder inside it. Authentication supports a
- * Windows [domain] (NTLM).
+ * The provider connects at the **server** level, then resolves each provider-relative path so
+ * its first segment is the SMB share and the rest is the path inside it. A base/root path of
+ * `/<Share>/…` pins that share; a **blank / `/`** root lists **all shares** on the server
+ * (enumerated over SRVSVC), so you can browse a server without knowing its share names.
+ * Authentication supports a Windows [domain] (NTLM).
  */
 class SmbProvider(
     private val host: String,
@@ -37,28 +41,24 @@ class SmbProvider(
     private var client: SMBClient? = null
     private var connection: Connection? = null
     private var session: Session? = null
-    private var share: DiskShare? = null
+    private val shareCache = HashMap<String, DiskShare>()
 
-    private val shareName: String
-    private val inShareRoot: String  // '/'-separated path within the share (no leading slash)
+    /** Fixed prefix (may be empty): '/'-separated, first segment is a pinned share if present. */
+    private val root: String = PathUtil.normalize(rootPath).trim('/')
 
-    init {
-        val parts = PathUtil.normalize(rootPath).trim('/').split('/').filter { it.isNotEmpty() }
-        require(parts.isNotEmpty()) {
-            "SMB path must start with a share name, e.g. /Backups or /Backups/Phone"
-        }
-        shareName = parts.first()
-        inShareRoot = parts.drop(1).joinToString("/")
+    private fun requireSession(): Session = session ?: throw IOException("SMB not connected")
+
+    /** Split a provider-relative path into (share or null for server-root, backslash in-share path). */
+    private fun resolve(rel: String): Pair<String?, String> {
+        val combined = if (root.isEmpty()) rel else "$root/$rel"
+        val segments = combined.replace('\\', '/').split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return null to ""
+        return segments.first() to segments.drop(1).joinToString("\\")
     }
 
-    private fun requireShare(): DiskShare = share ?: throw IOException("SMB not connected")
-
-    /** Build the backslash path inside the share for a provider-relative path. */
-    private fun full(rel: String): String {
-        val combined = listOf(inShareRoot, rel.replace('\\', '/'))
-            .flatMap { it.split('/') }
-            .filter { it.isNotEmpty() }
-        return combined.joinToString("\\")
+    private fun diskShare(name: String): DiskShare = shareCache.getOrPut(name) {
+        (requireSession().connectShare(name) as? DiskShare)
+            ?: throw IOException("'$name' is not a disk share")
     }
 
     private fun parentOf(rel: String): String {
@@ -79,18 +79,29 @@ class SmbProvider(
         } else {
             AuthenticationContext(username, password.toCharArray(), domain)
         }
-        val sess = conn.authenticate(auth)
-        val sh = sess.connectShare(shareName) as? DiskShare
-            ?: throw IOException("'$shareName' is not a disk share")
+        session = conn.authenticate(auth)
         client = c
         connection = conn
-        session = sess
-        share = sh
+    }
+
+    /** Disk share names available on the server (excludes IPC$ / printer shares). */
+    private fun listShares(): List<String> {
+        val transport = SMBTransportFactories.SRVSVC.getTransport(requireSession())
+        val service = ServerService(transport)
+        return service.shares1
+            .filter { (it.type and 0xFF) == 0 }      // STYPE_DISKTREE
+            .mapNotNull { it.netName }
+            .filter { it.isNotEmpty() }
     }
 
     override fun listDir(relDir: String): List<RemoteFile> {
-        val dir = full(relDir)
-        return requireShare().list(dir)
+        val (share, inPath) = resolve(relDir)
+        if (share == null) {
+            return listShares().map { name ->
+                RemoteFile(PathUtil.childRel(relDir, name), name, isDirectory = true, size = 0L, modifiedTime = 0L)
+            }
+        }
+        return diskShare(share).list(inPath)
             .filter { it.fileName != "." && it.fileName != ".." }
             .map { info ->
                 val isDir = (info.fileAttributes and FileAttributes.FILE_ATTRIBUTE_DIRECTORY.value) != 0L
@@ -104,43 +115,56 @@ class SmbProvider(
             }
     }
 
-    override fun stat(relPath: String): RemoteFile? = try {
-        val info = requireShare().getFileInformation(full(relPath))
-        val std = info.standardInformation
-        RemoteFile(
-            relPath = relPath,
-            name = PathUtil.name(relPath),
-            isDirectory = std.isDirectory,
-            size = if (std.isDirectory) 0L else std.endOfFile,
-            modifiedTime = info.basicInformation.lastWriteTime.toEpoch(TimeUnit.MILLISECONDS)
-        )
-    } catch (e: SMBApiException) {
-        null
+    override fun stat(relPath: String): RemoteFile? {
+        val (share, inPath) = resolve(relPath)
+        if (share == null) return RemoteFile(relPath, "", isDirectory = true, size = 0L, modifiedTime = 0L)
+        if (inPath.isEmpty()) return RemoteFile(relPath, share, isDirectory = true, size = 0L, modifiedTime = 0L)
+        return try {
+            val info = diskShare(share).getFileInformation(inPath)
+            val std = info.standardInformation
+            RemoteFile(
+                relPath = relPath,
+                name = PathUtil.name(relPath),
+                isDirectory = std.isDirectory,
+                size = if (std.isDirectory) 0L else std.endOfFile,
+                modifiedTime = info.basicInformation.lastWriteTime.toEpoch(TimeUnit.MILLISECONDS)
+            )
+        } catch (e: SMBApiException) {
+            null
+        }
     }
 
     override fun makeDir(relDir: String) {
-        val target = full(relDir)
-        if (target.isEmpty()) return
-        val sh = requireShare()
+        val (share, inPath) = resolve(relDir)
+        if (share == null || inPath.isEmpty()) return  // can't create shares
+        val sh = diskShare(share)
         var acc = ""
-        for (segment in target.split('\\').filter { it.isNotEmpty() }) {
+        for (segment in inPath.split('\\').filter { it.isNotEmpty() }) {
             acc = if (acc.isEmpty()) segment else "$acc\\$segment"
             if (!sh.folderExists(acc)) sh.mkdir(acc)
         }
     }
 
     override fun deleteFile(relPath: String) {
-        requireShare().rm(full(relPath))
+        val (share, inPath) = resolve(relPath)
+        if (share == null) throw IOException("Cannot delete at the server root")
+        diskShare(share).rm(inPath)
     }
 
     override fun deleteDir(relDir: String) {
-        requireShare().rmdir(full(relDir), false)
+        val (share, inPath) = resolve(relDir)
+        if (share == null || inPath.isEmpty()) return
+        diskShare(share).rmdir(inPath, false)
     }
 
     override fun rename(fromRel: String, toRel: String) {
+        val (fromShare, inFrom) = resolve(fromRel)
+        val (toShare, inTo) = resolve(toRel)
+        if (fromShare == null || toShare == null) throw IOException("Cannot move items at the server root")
+        if (fromShare != toShare) throw IOException("Moving between shares isn't supported; copy instead")
         makeDir(parentOf(toRel))
-        val entry = requireShare().open(
-            full(fromRel),
+        val entry = diskShare(fromShare).open(
+            inFrom,
             setOf(AccessMask.MAXIMUM_ALLOWED),
             null,
             SMB2ShareAccess.ALL,
@@ -148,15 +172,17 @@ class SmbProvider(
             null
         )
         try {
-            entry.rename(full(toRel))
+            entry.rename(inTo)
         } finally {
             entry.close()
         }
     }
 
     override fun download(relPath: String, dest: File) {
-        val f = requireShare().openFile(
-            full(relPath),
+        val (share, inPath) = resolve(relPath)
+        if (share == null) throw IOException("Not a file: $relPath")
+        val f = diskShare(share).openFile(
+            inPath,
             setOf(AccessMask.GENERIC_READ),
             null,
             SMB2ShareAccess.ALL,
@@ -171,9 +197,11 @@ class SmbProvider(
     }
 
     override fun upload(src: File, relPath: String, mtime: Long) {
+        val (share, inPath) = resolve(relPath)
+        if (share == null) throw IOException("Cannot write at the server root")
         makeDir(parentOf(relPath))
-        val f = requireShare().openFile(
-            full(relPath),
+        val f = diskShare(share).openFile(
+            inPath,
             setOf(AccessMask.GENERIC_WRITE),
             null,
             SMB2ShareAccess.ALL,
@@ -188,11 +216,12 @@ class SmbProvider(
     }
 
     override fun close() {
-        runCatching { share?.close() }
+        shareCache.values.forEach { runCatching { it.close() } }
+        shareCache.clear()
         runCatching { session?.close() }
         runCatching { connection?.close() }
         runCatching { client?.close() }
-        share = null; session = null; connection = null; client = null
+        session = null; connection = null; client = null
     }
 
     companion object {

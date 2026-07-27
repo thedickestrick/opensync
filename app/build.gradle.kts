@@ -127,6 +127,10 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")     // WebDAV over HTTP(S)
     implementation("com.hierynomus:smbj:0.13.0")             // SMB2 / SMB3 (Windows shares / domain)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1") // crypto backend for SMB3
+    implementation("com.rapid7.client:dcerpc:0.12.13") {     // SRVSVC RPC: enumerate a server's shares
+        exclude(group = "com.hierynomus", module = "smbj")   // keep our smbj 0.13.0
+        exclude(group = "org.slf4j", module = "slf4j-simple")
+    }
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
