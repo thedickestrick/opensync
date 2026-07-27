@@ -5,7 +5,11 @@ import android.content.Intent
 import android.os.Environment
 import android.webkit.MimeTypeMap
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,21 +21,35 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -43,7 +61,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -61,49 +81,184 @@ import java.io.File
 
 enum class NoteKind { PDF, RAW, TEXT, IMAGE, OTHER }
 
-data class NoteEntry(val name: String, val path: String, val subDir: String, val kind: NoteKind)
+data class NoteEntry(val name: String, val path: String, val isDir: Boolean, val kind: NoteKind?)
 
 data class NotesState(
-    val dir: String = "",
+    val rootDir: String = "",
+    val currentDir: String = "",
     val entries: List<NoteEntry> = emptyList(),
-    val loading: Boolean = false
-)
+    val loading: Boolean = false,
+    val selection: Set<String> = emptySet(),
+    val clipboard: List<String> = emptyList(),
+    val clipboardCut: Boolean = false,
+    val error: String? = null
+) {
+    val selectionMode get() = selection.isNotEmpty()
+    val canGoUp get() = currentDir.isNotBlank() && currentDir != rootDir
+}
 
 class NotesViewModel : ViewModel() {
     private val prefs = AppPrefs(Graph.appContext)
-    private val _state = MutableStateFlow(NotesState(dir = prefs.notesDir))
+    private val _state = MutableStateFlow(NotesState())
     val state = _state.asStateFlow()
 
-    init { if (prefs.notesDir.isNotBlank()) rescan() }
+    init {
+        val root = prefs.notesDir
+        _state.value = NotesState(rootDir = root, currentDir = root)
+        if (root.isNotBlank()) rescan()
+    }
 
-    fun setDir(path: String) {
+    fun setRoot(path: String) {
         prefs.notesDir = path
-        _state.value = _state.value.copy(dir = path)
+        _state.value = _state.value.copy(rootDir = path, currentDir = path, selection = emptySet())
         rescan()
     }
 
+    fun openDir(path: String) {
+        _state.value = _state.value.copy(currentDir = path, selection = emptySet())
+        rescan()
+    }
+
+    fun up() {
+        val s = _state.value
+        if (!s.canGoUp) return
+        val parent = File(s.currentDir).parentFile?.absolutePath ?: s.rootDir
+        // Never navigate above the chosen notes root.
+        val target = if (isWithinRoot(parent, s.rootDir)) parent else s.rootDir
+        openDir(target)
+    }
+
     fun rescan() {
-        val dir = _state.value.dir
+        val dir = _state.value.currentDir
         if (dir.isBlank()) return
         _state.value = _state.value.copy(loading = true)
         viewModelScope.launch {
-            val entries = withContext(Dispatchers.IO) { scan(File(dir)) }
+            val entries = withContext(Dispatchers.IO) { listDir(File(dir)) }
             _state.value = _state.value.copy(entries = entries, loading = false)
         }
     }
 
-    private fun scan(root: File): List<NoteEntry> {
-        if (!root.isDirectory) return emptyList()
-        return root.walkTopDown().maxDepth(6)
-            .filter { it.isFile }
-            .mapNotNull { f ->
-                val kind = kindOf(f.name) ?: return@mapNotNull null
-                val sub = f.parentFile?.relativeToOrNull(root)?.path?.takeIf { it.isNotEmpty() && it != "." } ?: ""
-                NoteEntry(f.name, f.absolutePath, sub, kind)
+    private fun listDir(dir: File): List<NoteEntry> {
+        val files = dir.listFiles() ?: return emptyList()
+        val dirs = files.filter { it.isDirectory }
+            .map { NoteEntry(it.name, it.absolutePath, true, null) }
+            .sortedBy { it.name.lowercase() }
+        val notes = files.filter { it.isFile }
+            .mapNotNull { f -> kindOf(f.name)?.let { NoteEntry(f.name, f.absolutePath, false, it) } }
+            .sortedBy { it.name.lowercase() }
+        return dirs + notes
+    }
+
+    // --- selection ---
+    fun toggle(path: String) {
+        val sel = _state.value.selection
+        _state.value = _state.value.copy(selection = if (path in sel) sel - path else sel + path)
+    }
+
+    fun clearSelection() { _state.value = _state.value.copy(selection = emptySet()) }
+
+    fun selectAll() {
+        _state.value = _state.value.copy(selection = _state.value.entries.map { it.path }.toSet())
+    }
+
+    // --- clipboard ---
+    fun copySelected() {
+        val s = _state.value
+        _state.value = s.copy(clipboard = s.selection.toList(), clipboardCut = false, selection = emptySet())
+    }
+
+    fun cutSelected() {
+        val s = _state.value
+        _state.value = s.copy(clipboard = s.selection.toList(), clipboardCut = true, selection = emptySet())
+    }
+
+    fun cancelClipboard() { _state.value = _state.value.copy(clipboard = emptyList(), clipboardCut = false) }
+
+    fun paste() {
+        val s = _state.value
+        if (s.clipboard.isEmpty()) return
+        val dest = File(s.currentDir)
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    s.clipboard.forEach { pasteInto(dest, File(it), s.clipboardCut) }
+                }.exceptionOrNull()?.message
             }
-            .take(3000)
-            .sortedWith(compareBy({ it.subDir.lowercase() }, { it.name.lowercase() }))
-            .toList()
+            _state.value = _state.value.copy(clipboard = emptyList(), clipboardCut = false, error = error)
+            rescan()
+        }
+    }
+
+    fun deleteSelected() {
+        val paths = _state.value.selection.toList()
+        if (paths.isEmpty()) return
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching { paths.forEach { File(it).deleteRecursively() } }.exceptionOrNull()?.message
+            }
+            _state.value = _state.value.copy(selection = emptySet(), error = error)
+            rescan()
+        }
+    }
+
+    fun rename(path: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    val src = File(path)
+                    src.renameTo(File(src.parentFile, clean))
+                }.exceptionOrNull()?.message
+            }
+            _state.value = _state.value.copy(selection = emptySet(), error = error)
+            rescan()
+        }
+    }
+
+    fun newFolder(name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { File(_state.value.currentDir, clean).mkdirs() } }
+            rescan()
+        }
+    }
+
+    fun dismissError() { _state.value = _state.value.copy(error = null) }
+
+    private fun pasteInto(destDir: File, src: File, cut: Boolean) {
+        if (!src.exists()) return
+        // Guard against copying a directory into itself or a descendant.
+        if (src.isDirectory && isWithinRoot(destDir.absolutePath, src.absolutePath)) return
+        if (cut) {
+            val target = File(destDir, src.name)
+            if (target.absolutePath == src.absolutePath) return
+            if (!src.renameTo(target)) {
+                val fallback = uniqueDest(destDir, src.name)
+                src.copyRecursively(fallback, overwrite = true)
+                src.deleteRecursively()
+            }
+        } else {
+            src.copyRecursively(uniqueDest(destDir, src.name), overwrite = false)
+        }
+    }
+
+    private fun uniqueDest(dir: File, name: String): File {
+        var candidate = File(dir, name)
+        if (!candidate.exists()) return candidate
+        val base = name.substringBeforeLast('.', name)
+        val ext = name.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+        var i = 2
+        while (candidate.exists()) { candidate = File(dir, "$base ($i)$ext"); i++ }
+        return candidate
+    }
+
+    private fun isWithinRoot(path: String, root: String): Boolean {
+        if (root.isBlank()) return false
+        val p = File(path).absolutePath
+        val r = File(root).absolutePath
+        return p == r || p.startsWith(r + File.separator)
     }
 }
 
@@ -129,119 +284,259 @@ fun NotesScreen(
 ) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
-    var showPicker by remember { mutableStateOf(false) }
+    var showRootPicker by remember { mutableStateOf(false) }
+    var showNewFolder by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<String?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = state.selectionMode || state.canGoUp) {
+        if (state.selectionMode) vm.clearSelection() else vm.up()
+    }
+
+    LaunchedErrorToast(state.error) { vm.dismissError() }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Notes") },
-                navigationIcon = {
-                    IconButton(onClick = openDrawer) { Icon(Icons.Filled.Menu, contentDescription = "Menu") }
-                },
-                actions = {
-                    if (state.dir.isNotBlank()) {
-                        IconButton(onClick = { vm.rescan() }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+            if (state.selectionMode) {
+                NotesSelectionBar(
+                    count = state.selection.size,
+                    canRename = state.selection.size == 1,
+                    onClose = { vm.clearSelection() },
+                    onCopy = { vm.copySelected() },
+                    onCut = { vm.cutSelected() },
+                    onDelete = { showDeleteConfirm = true },
+                    onRename = { renameTarget = state.selection.first() },
+                    onSelectAll = { vm.selectAll() }
+                )
+            } else {
+                TopAppBar(
+                    title = { Text(if (state.rootDir.isBlank()) "Notes" else titleFor(state)) },
+                    navigationIcon = {
+                        IconButton(onClick = openDrawer) { Icon(Icons.Filled.Menu, contentDescription = "Menu") }
+                    },
+                    actions = {
+                        if (state.rootDir.isNotBlank()) {
+                            IconButton(onClick = { vm.rescan() }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+                            }
+                        }
+                        IconButton(onClick = { showRootPicker = true }) {
+                            Icon(Icons.Filled.FolderOpen, contentDescription = "Change notes folder")
                         }
                     }
-                    IconButton(onClick = { showPicker = true }) {
-                        Icon(Icons.Filled.CreateNewFolder, contentDescription = "Choose folder")
-                    }
+                )
+            }
+        },
+        floatingActionButton = {
+            if (state.rootDir.isNotBlank() && !state.selectionMode) {
+                FloatingActionButton(onClick = { showNewFolder = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = "New folder")
                 }
-            )
+            }
+        },
+        bottomBar = {
+            if (state.clipboard.isNotEmpty()) {
+                PasteBar(
+                    count = state.clipboard.size,
+                    cut = state.clipboardCut,
+                    onPaste = { vm.paste() },
+                    onCancel = { vm.cancelClipboard() }
+                )
+            }
         }
     ) { inner ->
         Box(Modifier.padding(inner).fillMaxSize()) {
             when {
-                state.dir.isBlank() -> SetupCard(Modifier.align(Alignment.Center)) { showPicker = true }
+                state.rootDir.isBlank() -> SetupCard(Modifier.align(Alignment.Center)) { showRootPicker = true }
                 state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                state.entries.isEmpty() -> Column(
-                    Modifier.align(Alignment.Center).padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        "No notes found in:\n${state.dir}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "\nExport notes from Samsung Notes (⋮ → Save as file → PDF / Text / Image) " +
-                            "into this folder, or copy the raw .spd files here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 8.dp)
+                    contentPadding = PaddingValues(bottom = 88.dp)
                 ) {
-                    item {
-                        Text(
-                            state.dir,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
-                    }
-                    items(state.entries, key = { it.path }) { entry ->
-                        NoteRow(entry) {
-                            when (entry.kind) {
-                                NoteKind.PDF -> onOpenPdf(entry.path)
-                                NoteKind.RAW, NoteKind.TEXT, NoteKind.IMAGE -> onOpenNote(entry.path)
-                                NoteKind.OTHER -> openWithSystem(context, File(entry.path))
+                    if (state.canGoUp) {
+                        item {
+                            Row(
+                                Modifier.fillMaxWidth().clickable { vm.up() }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Filled.ArrowUpward, contentDescription = "Up")
+                                Text("..", Modifier.padding(start = 12.dp),
+                                    style = MaterialTheme.typography.bodyLarge)
                             }
                         }
+                    }
+                    if (state.entries.isEmpty()) {
+                        item {
+                            Text(
+                                "Empty folder.\nExport notes from Samsung Notes (⋮ → Save as file) here, " +
+                                    "or copy .spd files in.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(24.dp)
+                            )
+                        }
+                    }
+                    items(state.entries, key = { it.path }) { entry ->
+                        NoteRow(
+                            entry = entry,
+                            selected = entry.path in state.selection,
+                            selectionMode = state.selectionMode,
+                            onClick = {
+                                when {
+                                    state.selectionMode -> vm.toggle(entry.path)
+                                    entry.isDir -> vm.openDir(entry.path)
+                                    entry.kind == NoteKind.PDF -> onOpenPdf(entry.path)
+                                    entry.kind == NoteKind.OTHER -> openWithSystem(context, File(entry.path))
+                                    else -> onOpenNote(entry.path)
+                                }
+                            },
+                            onLongClick = { vm.toggle(entry.path) }
+                        )
                     }
                 }
             }
         }
     }
 
-    if (showPicker) {
+    if (showRootPicker) {
         NotesFolderPickerDialog(
-            initial = state.dir,
-            onDismiss = { showPicker = false },
-            onSelect = { path -> vm.setDir(path); showPicker = false }
+            initial = state.rootDir,
+            onDismiss = { showRootPicker = false },
+            onSelect = { path -> vm.setRoot(path); showRootPicker = false }
+        )
+    }
+    if (showNewFolder) {
+        NotesTextDialog("New folder", "", "Create", onDismiss = { showNewFolder = false }) { name ->
+            vm.newFolder(name); showNewFolder = false
+        }
+    }
+    renameTarget?.let { path ->
+        NotesTextDialog("Rename", File(path).name, "Rename", onDismiss = { renameTarget = null }) { name ->
+            vm.rename(path, name); renameTarget = null
+        }
+    }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete ${state.selection.size} item(s)?") },
+            text = { Text("This permanently deletes the selected files and folders.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirm = false; vm.deleteSelected() }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
         )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteRow(entry: NoteEntry, onClick: () -> Unit) {
+private fun NoteRow(
+    entry: NoteEntry,
+    selected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        Modifier
+            .fillMaxWidth()
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            when (entry.kind) {
-                NoteKind.IMAGE -> Icons.Filled.Image
+            when {
+                entry.isDir -> Icons.Filled.Folder
+                entry.kind == NoteKind.IMAGE -> Icons.Filled.Image
                 else -> Icons.Filled.Description
             },
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary
+            tint = if (entry.isDir) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.primary
         )
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyLarge)
-            val label = buildString {
-                append(kindLabel(entry.kind))
-                if (entry.subDir.isNotEmpty()) append("  •  ${entry.subDir}")
-            }
-            Text(label, style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                if (entry.isDir) "Folder" else kindLabel(entry.kind),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (selectionMode && selected) {
+            Icon(Icons.Filled.CheckCircle, contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.primary)
         }
     }
 }
 
-private fun kindLabel(kind: NoteKind) = when (kind) {
+private fun titleFor(state: NotesState): String {
+    if (state.currentDir == state.rootDir) return "Notes"
+    return File(state.currentDir).name
+}
+
+private fun kindLabel(kind: NoteKind?) = when (kind) {
     NoteKind.PDF -> "PDF"
     NoteKind.RAW -> "Samsung Notes"
     NoteKind.TEXT -> "Text"
     NoteKind.IMAGE -> "Image"
     NoteKind.OTHER -> "Document"
+    null -> ""
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NotesSelectionBar(
+    count: Int,
+    canRename: Boolean,
+    onClose: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onDelete: () -> Unit,
+    onRename: () -> Unit,
+    onSelectAll: () -> Unit
+) {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+        },
+        title = { Text("$count selected") },
+        actions = {
+            if (canRename) {
+                IconButton(onClick = onRename) {
+                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
+                }
+            }
+            IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
+            IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
+            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
+            IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
+        }
+    )
+}
+
+@Composable
+private fun PasteBar(count: Int, cut: Boolean, onPaste: () -> Unit, onCancel: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Filled.ContentPaste, contentDescription = null)
+            Text(
+                "${if (cut) "Move" else "Copy"} $count item(s) here",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            TextButton(onClick = onCancel) { Text("Cancel") }
+            Button(onClick = onPaste) { Text("Paste") }
+        }
+    }
 }
 
 @Composable
@@ -251,13 +546,12 @@ private fun SetupCard(modifier: Modifier, onChoose: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Icon(Icons.Filled.Description, contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary)
+        Icon(Icons.Filled.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Text("Import your notes", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Pick the folder where your notes live. OpenSync reads PDF, text and image exports, " +
-                "and best-effort parses raw Samsung Notes (.spd/.sdoc) files.\n\n" +
-                "Tip: in Samsung Notes, ⋮ → Save as file → PDF or Text, and save into this folder.",
+            "Pick the folder where your notes live. OpenSync reads PDF, text and image exports, and " +
+                "best-effort parses raw Samsung Notes (.spd/.sdoc) files — with full copy/move/delete controls.\n\n" +
+                "Tip: in Samsung Notes, ⋮ → Save as file → PDF or Text into this folder.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -265,15 +559,37 @@ private fun SetupCard(modifier: Modifier, onChoose: () -> Unit) {
     }
 }
 
-/** Minimal device-folder browser for choosing the notes directory. */
+@Composable
+private fun NotesTextDialog(
+    title: String, initial: String, confirmLabel: String,
+    onDismiss: () -> Unit, onConfirm: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text, onValueChange = { text = it }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { if (text.isNotBlank()) onConfirm(text.trim()) }, enabled = text.isNotBlank()) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/** Minimal device-folder browser for choosing the notes root directory. */
 @Composable
 private fun NotesFolderPickerDialog(initial: String, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
     val root = remember {
         val f = File(initial)
-        when {
-            initial.isNotBlank() && f.isDirectory -> f
-            else -> Environment.getExternalStorageDirectory() ?: File("/storage/emulated/0")
-        }
+        if (initial.isNotBlank() && f.isDirectory) f
+        else Environment.getExternalStorageDirectory() ?: File("/storage/emulated/0")
     }
     var current by remember { mutableStateOf(root) }
     val subDirs = remember(current) {
@@ -316,6 +632,17 @@ private fun NotesFolderPickerDialog(initial: String, onDismiss: () -> Unit, onSe
         confirmButton = { Button(onClick = { onSelect(current.absolutePath) }) { Text("Use this folder") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+@Composable
+private fun LaunchedErrorToast(error: String?, onShown: () -> Unit) {
+    val context = LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(error) {
+        if (error != null) {
+            Toast.makeText(context, error, Toast.LENGTH_LONG).show()
+            onShown()
+        }
+    }
 }
 
 private fun openWithSystem(context: Context, file: File) {
