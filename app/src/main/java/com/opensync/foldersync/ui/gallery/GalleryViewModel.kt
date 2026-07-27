@@ -38,10 +38,15 @@ data class GalleryUiState(
     val viewerIndex: Int? = null,
     val selection: Set<String> = emptySet(),
     val hasClipboard: Boolean = false,
-    val busyMessage: String? = null
+    val busyMessage: String? = null,
+    val albumBaseDir: String? = null
 ) {
     val inSelectionMode: Boolean get() = selection.isNotEmpty()
-    val isProvider: Boolean get() = source is GallerySource.Provider
+
+    /** True when the current view is a provider-backed folder (its media are real files we can manage). */
+    val browsingFiles: Boolean
+        get() = source is GallerySource.Provider || (inAlbum && albumBaseDir != null)
+
     val canBack: Boolean
         get() = selection.isNotEmpty() ||
             (source is GallerySource.Device && inAlbum) ||
@@ -72,11 +77,13 @@ class GalleryViewModel : ViewModel() {
         viewModelScope.launch {
             thumbJob?.cancel()
             _remoteThumbs.value = emptyMap()
+            clipboard = null
             _state.update {
                 it.copy(
                     source = source, sourceLabel = label, error = null, inAlbum = false,
                     albums = emptyList(), folders = emptyList(), media = emptyList(),
-                    relDir = "", viewerIndex = null
+                    relDir = "", viewerIndex = null, selection = emptySet(),
+                    hasClipboard = false, albumBaseDir = null
                 )
             }
             when (source) {
@@ -95,7 +102,10 @@ class GalleryViewModel : ViewModel() {
 
     private fun loadDeviceAlbums() {
         viewModelScope.launch {
-            _state.update { it.copy(loading = true, error = null, inAlbum = false, media = emptyList()) }
+            _state.update {
+                it.copy(loading = true, error = null, inAlbum = false, media = emptyList(),
+                    albumBaseDir = null, selection = emptySet())
+            }
             try {
                 rawAlbums = repo.deviceAlbums()
                 _state.update {
@@ -127,13 +137,27 @@ class GalleryViewModel : ViewModel() {
     }
 
     fun openDeviceAlbum(album: Album) {
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true, error = null) }
-            try {
-                val media = repo.deviceMedia(album.id)
-                _state.update { it.copy(media = media, inAlbum = true, title = album.name, loading = false) }
-            } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = e.message ?: "Cannot open album") }
+        // Prefer browsing the album's real folder (full file controls); fall back to MediaStore.
+        if (album.directory.isNotBlank()) {
+            viewModelScope.launch {
+                repo.setProviderLocation(ExplorerLocation.LocalRoot)
+                _state.update {
+                    it.copy(inAlbum = true, title = album.name, albumBaseDir = album.directory, selection = emptySet())
+                }
+                navigateProvider(album.directory)
+            }
+        } else {
+            viewModelScope.launch {
+                _state.update { it.copy(loading = true, error = null) }
+                try {
+                    val media = repo.deviceMedia(album.id)
+                    _state.update {
+                        it.copy(media = media, folders = emptyList(), inAlbum = true,
+                            title = album.name, albumBaseDir = null, loading = false)
+                    }
+                } catch (e: Exception) {
+                    _state.update { it.copy(loading = false, error = e.message ?: "Cannot open album") }
+                }
             }
         }
     }
@@ -160,7 +184,14 @@ class GalleryViewModel : ViewModel() {
         when {
             s.selection.isNotEmpty() -> clearSelection()
             s.viewerIndex != null -> closeViewer()
-            s.source is GallerySource.Device && s.inAlbum -> loadDeviceAlbums()
+            s.source is GallerySource.Device && s.inAlbum -> {
+                val base = s.albumBaseDir?.trim('/')
+                if (base != null && s.relDir.trim('/') != base && s.relDir.length > base.length) {
+                    navigateProvider(s.relDir.trim('/').substringBeforeLast('/', ""))
+                } else {
+                    loadDeviceAlbums()
+                }
+            }
             s.source is GallerySource.Provider && s.relDir.isNotEmpty() ->
                 navigateProvider(s.relDir.trim('/').substringBeforeLast('/', ""))
         }
@@ -193,13 +224,13 @@ class GalleryViewModel : ViewModel() {
     }
 
     fun copySelected() {
-        if (_state.value.source !is GallerySource.Provider) return
+        if (!_state.value.browsingFiles) return
         clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = false)
         _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
     }
 
     fun cutSelected() {
-        if (_state.value.source !is GallerySource.Provider) return
+        if (!_state.value.browsingFiles) return
         clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = true)
         _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
     }
@@ -256,7 +287,7 @@ class GalleryViewModel : ViewModel() {
     }
 
     fun newFolder(name: String) {
-        if (_state.value.source !is GallerySource.Provider) return
+        if (!_state.value.browsingFiles) return
         viewModelScope.launch {
             try {
                 repo.createFolder(_state.value.relDir, name)

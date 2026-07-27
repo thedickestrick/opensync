@@ -179,7 +179,7 @@ fun GalleryScreen(
             }
         },
         floatingActionButton = {
-            if (state.isProvider && !state.inSelectionMode && state.viewerIndex == null) {
+            if (state.browsingFiles && !state.inSelectionMode && state.viewerIndex == null) {
                 FloatingActionButton(onClick = { showNewFolder = true }) {
                     Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
                 }

@@ -16,7 +16,9 @@ data class Album(
     val name: String,
     val count: Int,
     val coverModel: Any?,
-    val latestDate: Long = 0L
+    val latestDate: Long = 0L,
+    /** The album's directory relative to the device root "/" (empty if unknown). */
+    val directory: String = ""
 )
 
 enum class AlbumSort(val label: String) {

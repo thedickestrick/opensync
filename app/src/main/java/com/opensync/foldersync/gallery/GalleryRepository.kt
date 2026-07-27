@@ -22,7 +22,7 @@ class GalleryRepository(private val context: Context) {
 
     private data class Row(
         val id: Long, val name: String, val bucketId: String, val bucketName: String,
-        val date: Long, val uri: Uri, val isVideo: Boolean
+        val date: Long, val uri: Uri, val isVideo: Boolean, val path: String
     )
 
     suspend fun deviceAlbums(): List<Album> = withContext(Dispatchers.IO) {
@@ -30,12 +30,15 @@ class GalleryRepository(private val context: Context) {
         rows.groupBy { it.bucketId }
             .map { (bucketId, items) ->
                 val sorted = items.sortedByDescending { it.date }
+                val dir = sorted.firstOrNull { it.path.isNotEmpty() }
+                    ?.let { File(it.path).parent?.trim('/') } ?: ""
                 Album(
                     id = bucketId,
                     name = sorted.first().bucketName,
                     count = sorted.size,
                     coverModel = sorted.first().uri,
-                    latestDate = sorted.first().date
+                    latestDate = sorted.first().date,
+                    directory = dir
                 )
             }
             .sortedBy { it.name.lowercase() }
@@ -60,6 +63,8 @@ class GalleryRepository(private val context: Context) {
             add(MediaStore.MediaColumns._ID)
             add(MediaStore.MediaColumns.DISPLAY_NAME)
             add(MediaStore.MediaColumns.DATE_MODIFIED)
+            @Suppress("DEPRECATION")
+            add(MediaStore.MediaColumns.DATA)
             if (hasBuckets) {
                 add(MediaStore.MediaColumns.BUCKET_ID)
                 add(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
@@ -75,12 +80,15 @@ class GalleryRepository(private val context: Context) {
             val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+            @Suppress("DEPRECATION")
+            val dataCol = c.getColumnIndex(MediaStore.MediaColumns.DATA)
             val bIdCol = if (hasBuckets) c.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID) else -1
             val bNameCol = if (hasBuckets) c.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME) else -1
             while (c.moveToNext()) {
                 val id = c.getLong(idCol)
                 val bId = if (bIdCol >= 0 && !c.isNull(bIdCol)) c.getString(bIdCol) else "0"
                 val bName = if (bNameCol >= 0 && !c.isNull(bNameCol)) c.getString(bNameCol) else "Device"
+                val filePath = if (dataCol >= 0 && !c.isNull(dataCol)) c.getString(dataCol) else ""
                 out += Row(
                     id = id,
                     name = c.getString(nameCol) ?: "",
@@ -88,7 +96,8 @@ class GalleryRepository(private val context: Context) {
                     bucketName = bName,
                     date = c.getLong(dateCol),
                     uri = ContentUris.withAppendedId(collection, id),
-                    isVideo = isVideo
+                    isVideo = isVideo,
+                    path = filePath
                 )
             }
         }
