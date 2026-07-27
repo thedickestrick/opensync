@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,9 @@ import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.data.ConflictRule
 import com.opensync.foldersync.data.FolderPair
 import com.opensync.foldersync.data.SyncDirection
+import com.opensync.foldersync.files.ExplorerLocation
+import com.opensync.foldersync.files.ExplorerRepository
+import com.opensync.foldersync.provider.RemoteFile
 import com.opensync.foldersync.ui.components.DropdownField
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -106,9 +112,11 @@ fun FolderPairEditScreen(
     LaunchedEffect(pairId) { vm.load(pairId) }
     val pair by vm.pair.collectAsState()
     val accounts by vm.accounts.collectAsState()
+    val selectedAccount = accounts.firstOrNull { it.id == pair.remoteAccountId }
 
     var showLocalPicker by remember { mutableStateOf(false) }
     var showRemotePicker by remember { mutableStateOf(false) }
+    var showAccountPicker by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -170,6 +178,12 @@ fun FolderPairEditScreen(
                 if (pair.remoteAccountId == null) {
                     {
                         IconButton(onClick = { showRemotePicker = true }) {
+                            Icon(Icons.Filled.Folder, contentDescription = "Browse")
+                        }
+                    }
+                } else if (selectedRemote != null) {
+                    {
+                        IconButton(onClick = { showAccountPicker = true }) {
                             Icon(Icons.Filled.Folder, contentDescription = "Browse")
                         }
                     }
@@ -269,6 +283,14 @@ fun FolderPairEditScreen(
             onSelect = { path -> vm.update { it.copy(remoteFolder = path) }; showRemotePicker = false }
         )
     }
+    if (showAccountPicker && selectedAccount != null) {
+        RemoteFolderPickerDialog(
+            account = selectedAccount,
+            initialPath = pair.remoteFolder,
+            onDismiss = { showAccountPicker = false },
+            onSelect = { path -> vm.update { it.copy(remoteFolder = path) }; showAccountPicker = false }
+        )
+    }
 }
 
 @Composable
@@ -344,6 +366,116 @@ private fun FolderPickerDialog(
         },
         confirmButton = {
             Button(onClick = { onSelect(current.absolutePath) }) { Text("Select this folder") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+/** Browses folders on a remote account (SMB shows shares first) so the user can pick a path. */
+@Composable
+private fun RemoteFolderPickerDialog(
+    account: Account,
+    initialPath: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val repo = remember { ExplorerRepository(context) }
+    var relDir by remember { mutableStateOf(initialPath.trim('/')) }
+    var folders by remember { mutableStateOf<List<RemoteFile>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var located by remember { mutableStateOf(false) }
+
+    LaunchedEffect(account.id) {
+        located = false
+        try {
+            repo.setLocation(ExplorerLocation.Remote(account.id))
+            located = true
+        } catch (e: Exception) {
+            error = e.message ?: "Cannot open account"
+            loading = false
+        }
+    }
+    LaunchedEffect(relDir, located) {
+        if (!located) return@LaunchedEffect
+        loading = true
+        error = null
+        try {
+            folders = repo.list(relDir).filter { it.isDirectory }.sortedBy { it.name.lowercase() }
+        } catch (e: Exception) {
+            error = e.message ?: "Cannot list folder"
+            folders = emptyList()
+        }
+        loading = false
+    }
+    DisposableEffect(Unit) {
+        onDispose { Thread { runCatching { repo.release() } }.start() }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "${account.name}:/$relDir",
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleSmall
+            )
+        },
+        text = {
+            LazyColumn(Modifier.height(320.dp)) {
+                if (relDir.isNotEmpty()) {
+                    item {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { relDir = relDir.substringBeforeLast('/', "") }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Filled.Folder, contentDescription = null)
+                            Text("  ..  (up)", modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+                items(folders, key = { it.relPath }) { dir ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { relDir = dir.relPath }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Folder, contentDescription = null)
+                        Text(dir.name, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+                if (loading) {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            horizontalArrangement = Arrangement.Center
+                        ) { CircularProgressIndicator() }
+                    }
+                }
+                error?.let { msg ->
+                    item {
+                        Text(msg, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+                    }
+                }
+                if (!loading && error == null && folders.isEmpty()) {
+                    item {
+                        val empty = if (relDir.isEmpty()) "(no shares/folders found)" else "(no sub-folders)"
+                        Text(empty, Modifier.padding(vertical = 12.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSelect(relDir) }) { Text("Select this folder") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
