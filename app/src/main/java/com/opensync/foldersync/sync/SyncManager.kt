@@ -11,11 +11,13 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.opensync.foldersync.data.AppDatabase
 import com.opensync.foldersync.data.FolderPair
+import com.opensync.foldersync.data.ScheduleMode
 import com.opensync.foldersync.data.SyncDirection
 import com.opensync.foldersync.data.SyncLog
 import com.opensync.foldersync.provider.ProviderFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 /** Runs syncs on demand and manages their WorkManager schedules. */
@@ -85,28 +87,77 @@ class SyncManager(
             .enqueueUniqueWork(oneTimeName(pairId), ExistingWorkPolicy.REPLACE, request)
     }
 
-    /** Register or cancel the periodic schedule for a single pair. */
+    /** Register or cancel the schedule for a single pair, per its [FolderPair.scheduleMode]. */
     fun schedulePair(pair: FolderPair) {
         val wm = WorkManager.getInstance(appContext)
-        if (!pair.enabled || pair.scheduleMinutes <= 0) {
-            wm.cancelUniqueWork(periodicName(pair.id))
+        val name = periodicName(pair.id)
+        if (!pair.enabled) {
+            wm.cancelUniqueWork(name)
             return
         }
-        val minutes = pair.scheduleMinutes.coerceAtLeast(15).toLong()
+        when (pair.scheduleMode) {
+            ScheduleMode.MANUAL -> wm.cancelUniqueWork(name)
+
+            ScheduleMode.INTERVAL -> {
+                if (pair.scheduleMinutes <= 0) {
+                    wm.cancelUniqueWork(name)
+                    return
+                }
+                val minutes = pair.scheduleMinutes.coerceAtLeast(15).toLong()
+                val request = PeriodicWorkRequestBuilder<SyncWorker>(minutes, TimeUnit.MINUTES)
+                    .setConstraints(constraintsFor(pair))
+                    .setInputData(workDataOf(SyncWorker.KEY_PAIR_ID to pair.id))
+                    .build()
+                wm.enqueueUniquePeriodicWork(name, ExistingPeriodicWorkPolicy.UPDATE, request)
+            }
+
+            ScheduleMode.DAILY -> {
+                val delay = nextDailyDelayMillis(pair)
+                if (delay == null) {
+                    wm.cancelUniqueWork(name)
+                    return
+                }
+                val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                    .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+                    .setConstraints(constraintsFor(pair))
+                    .setInputData(workDataOf(SyncWorker.KEY_PAIR_ID to pair.id))
+                    .build()
+                // OneTime work persists across reboots; the worker re-enqueues the next day.
+                wm.enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, request)
+            }
+        }
+    }
+
+    private fun constraintsFor(pair: FolderPair): Constraints {
         val network = when {
             pair.remoteAccountId == null -> NetworkType.NOT_REQUIRED
             pair.requireWifi -> NetworkType.UNMETERED
             else -> NetworkType.CONNECTED
         }
-        val constraints = Constraints.Builder()
+        return Constraints.Builder()
             .setRequiredNetworkType(network)
             .setRequiresCharging(pair.requireCharging)
             .build()
-        val request = PeriodicWorkRequestBuilder<SyncWorker>(minutes, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .setInputData(workDataOf(SyncWorker.KEY_PAIR_ID to pair.id))
-            .build()
-        wm.enqueueUniquePeriodicWork(periodicName(pair.id), ExistingPeriodicWorkPolicy.UPDATE, request)
+    }
+
+    /** Milliseconds until the next allowed daily run (today at HH:MM if still ahead, else the next allowed weekday). */
+    private fun nextDailyDelayMillis(pair: FolderPair): Long? {
+        val days = if (pair.daysOfWeek == 0) 0b1111111 else pair.daysOfWeek
+        val nowMillis = System.currentTimeMillis()
+        val cand = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, pair.dailyHour.coerceIn(0, 23))
+            set(Calendar.MINUTE, pair.dailyMinute.coerceIn(0, 59))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        repeat(8) {
+            if (cand.timeInMillis > nowMillis) {
+                val bit = cand.get(Calendar.DAY_OF_WEEK) - 1 // 1=Sun … 7=Sat → bit 0…6
+                if ((days shr bit) and 1 == 1) return cand.timeInMillis - nowMillis
+            }
+            cand.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        return null
     }
 
     suspend fun rescheduleAll() {

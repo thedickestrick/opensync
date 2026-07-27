@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.pairs
 
+import android.app.TimePickerDialog
 import android.os.Environment
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +54,7 @@ import com.opensync.foldersync.Graph
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.data.ConflictRule
 import com.opensync.foldersync.data.FolderPair
+import com.opensync.foldersync.data.ScheduleMode
 import com.opensync.foldersync.data.SyncDirection
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.ExplorerRepository
@@ -110,6 +113,7 @@ fun FolderPairEditScreen(
     vm: FolderPairEditViewModel = viewModel()
 ) {
     LaunchedEffect(pairId) { vm.load(pairId) }
+    val context = LocalContext.current
     val pair by vm.pair.collectAsState()
     val accounts by vm.accounts.collectAsState()
     val selectedAccount = accounts.firstOrNull { it.id == pair.remoteAccountId }
@@ -246,16 +250,55 @@ fun FolderPairEditScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            OutlinedTextField(
-                value = if (pair.scheduleMinutes == 0) "" else pair.scheduleMinutes.toString(),
-                onValueChange = { v ->
-                    vm.update { it.copy(scheduleMinutes = v.filter(Char::isDigit).toIntOrNull() ?: 0) }
-                },
-                label = { Text("Auto-sync every N minutes (blank = manual; min 15)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
+            DropdownField(
+                label = "Schedule",
+                options = ScheduleMode.entries,
+                selected = pair.scheduleMode,
+                optionLabel = { it.label },
+                onSelected = { m -> vm.update { it.copy(scheduleMode = m) } }
             )
+
+            when (pair.scheduleMode) {
+                ScheduleMode.MANUAL -> {
+                    Text(
+                        "Runs only when you tap Sync.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                ScheduleMode.INTERVAL -> {
+                    OutlinedTextField(
+                        value = if (pair.scheduleMinutes == 0) "" else pair.scheduleMinutes.toString(),
+                        onValueChange = { v ->
+                            vm.update { it.copy(scheduleMinutes = v.filter(Char::isDigit).toIntOrNull() ?: 0) }
+                        },
+                        label = { Text("Every N minutes (min 15)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                ScheduleMode.DAILY -> {
+                    OutlinedButton(
+                        onClick = {
+                            TimePickerDialog(
+                                context,
+                                { _, h, m -> vm.update { it.copy(dailyHour = h, dailyMinute = m) } },
+                                pair.dailyHour, pair.dailyMinute, true
+                            ).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Time: %02d:%02d".format(pair.dailyHour, pair.dailyMinute))
+                    }
+                    Text(
+                        "On these days:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    DayOfWeekRow(pair.daysOfWeek) { mask -> vm.update { it.copy(daysOfWeek = mask) } }
+                }
+            }
 
             if (pair.id != 0L) {
                 OutlinedButton(
@@ -290,6 +333,24 @@ fun FolderPairEditScreen(
             onDismiss = { showAccountPicker = false },
             onSelect = { path -> vm.update { it.copy(remoteFolder = path) }; showAccountPicker = false }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DayOfWeekRow(mask: Int, onChange: (Int) -> Unit) {
+    // Bit i = Calendar.DAY_OF_WEEK - 1: 0=Sun … 6=Sat.
+    val labels = listOf("S", "M", "T", "W", "T", "F", "S")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        labels.forEachIndexed { i, lbl ->
+            val on = (mask shr i) and 1 == 1
+            FilterChip(
+                selected = on,
+                onClick = { onChange(mask xor (1 shl i)) },
+                label = { Text(lbl) },
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
 }
 

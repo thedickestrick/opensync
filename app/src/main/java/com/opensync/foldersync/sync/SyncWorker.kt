@@ -9,6 +9,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.Notifications
+import com.opensync.foldersync.data.ScheduleMode
 import kotlinx.coroutines.CancellationException
 
 /** Background worker that runs a single folder pair's sync with a progress notification. */
@@ -33,12 +34,24 @@ class SyncWorker(
 
         return try {
             Graph.syncManager.syncNow(pairId, progress) { isStopped }
+            rescheduleDaily(pairId)
             Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // The failure is already recorded in the sync log; don't spin on retries.
+            rescheduleDaily(pairId)
             Result.success()
+        }
+    }
+
+    /** For daily-scheduled pairs, queue the next occurrence (one-time work does not auto-repeat). */
+    private suspend fun rescheduleDaily(pairId: Long) {
+        runCatching {
+            val pair = Graph.database.folderPairDao().getById(pairId)
+            if (pair != null && pair.enabled && pair.scheduleMode == ScheduleMode.DAILY) {
+                Graph.syncManager.schedulePair(pair)
+            }
         }
     }
 

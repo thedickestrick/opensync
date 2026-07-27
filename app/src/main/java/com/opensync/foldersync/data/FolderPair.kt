@@ -22,6 +22,12 @@ enum class ConflictRule(val label: String) {
     SKIP("Skip conflicts")
 }
 
+enum class ScheduleMode(val label: String) {
+    MANUAL("Manual only"),
+    INTERVAL("Repeat every…"),
+    DAILY("Daily at a set time")
+}
+
 /**
  * A configured synchronization between a local device folder and a remote target.
  * When [remoteAccountId] is null, the "remote" side is another folder on the device
@@ -40,7 +46,13 @@ data class FolderPair(
     val includeSubfolders: Boolean = true,
     val includeFilter: String = "",
     val excludeFilter: String = "",
+    val scheduleMode: ScheduleMode = ScheduleMode.MANUAL,
     val scheduleMinutes: Int = 0,
+    /** DAILY: hour (0–23) and minute (0–59) of the daily run. */
+    val dailyHour: Int = 2,
+    val dailyMinute: Int = 0,
+    /** DAILY: bitmask of allowed weekdays, bit i where i = Calendar.DAY_OF_WEEK - 1 (0=Sun … 6=Sat). 127 = every day. */
+    val daysOfWeek: Int = 0b1111111,
     val requireWifi: Boolean = true,
     val requireCharging: Boolean = false,
     val enabled: Boolean = true,

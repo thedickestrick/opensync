@@ -12,4 +12,7 @@ class Converters {
 
     @TypeConverter fun toConflictRule(v: String): ConflictRule = ConflictRule.valueOf(v)
     @TypeConverter fun fromConflictRule(v: ConflictRule): String = v.name
+
+    @TypeConverter fun toScheduleMode(v: String): ScheduleMode = ScheduleMode.valueOf(v)
+    @TypeConverter fun fromScheduleMode(v: ScheduleMode): String = v.name
 }
