@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
@@ -37,6 +38,8 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.UnfoldMore
@@ -55,6 +58,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -80,6 +85,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.notes.NoteConverter
+import com.opensync.foldersync.ui.formatBytes
+import com.opensync.foldersync.ui.formatTimestamp
 import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,7 +104,8 @@ data class NoteEntry(
     val kind: NoteKind?,
     val subDir: String = "",
     val size: Long = 0,
-    val modifiedTime: Long = 0
+    val modifiedTime: Long = 0,
+    val pinned: Boolean = false
 )
 
 data class NotesState(
@@ -108,6 +116,8 @@ data class NotesState(
     val includeSub: Boolean = true,
     val sortBy: SortBy = SortBy.NAME,
     val ascending: Boolean = true,
+    val query: String = "",
+    val searching: Boolean = false,
     val selection: Set<String> = emptySet(),
     val clipboard: List<String> = emptyList(),
     val clipboardCut: Boolean = false,
@@ -122,6 +132,7 @@ class NotesViewModel : ViewModel() {
     private val _state = MutableStateFlow(NotesState())
     val state = _state.asStateFlow()
     private var rawEntries: List<NoteEntry> = emptyList()
+    private var pinned: Set<String> = prefs.pinnedNotes
 
     init {
         val root = prefs.notesDir
@@ -172,14 +183,41 @@ class NotesViewModel : ViewModel() {
         pushSorted()
     }
 
+    fun setQuery(q: String) {
+        _state.value = _state.value.copy(query = q)
+        pushSorted()
+    }
+
+    fun toggleSearch() {
+        val s = _state.value
+        _state.value = s.copy(searching = !s.searching, query = if (s.searching) "" else s.query)
+        pushSorted()
+    }
+
+    /** Pin/unpin the selected notes (toggles each individually). */
+    fun togglePinSelected() {
+        val sel = _state.value.selection
+        if (sel.isEmpty()) return
+        val next = pinned.toMutableSet()
+        sel.forEach { if (it in next) next.remove(it) else next.add(it) }
+        pinned = next
+        prefs.pinnedNotes = next
+        _state.value = _state.value.copy(selection = emptySet())
+        pushSorted()
+    }
+
     private fun pushSorted() {
         val s = _state.value
-        _state.value = s.copy(entries = sortEntries(rawEntries, s.sortBy, s.ascending), loading = false)
+        val withPin = rawEntries.map { it.copy(pinned = it.path in pinned) }
+        val q = s.query.trim()
+        val filtered = if (q.isBlank()) withPin else withPin.filter { it.name.contains(q, ignoreCase = true) }
+        _state.value = s.copy(entries = sortEntries(filtered, s.sortBy, s.ascending), loading = false)
     }
 
     private fun sortEntries(list: List<NoteEntry>, sortBy: SortBy, ascending: Boolean): List<NoteEntry> {
         val cmp = Comparator<NoteEntry> { a, b ->
             if (a.isDir != b.isDir) return@Comparator if (a.isDir) -1 else 1
+            if (!a.isDir && a.pinned != b.pinned) return@Comparator if (a.pinned) -1 else 1
             val k = when (sortBy) {
                 SortBy.NAME -> a.name.compareTo(b.name, ignoreCase = true)
                 SortBy.SIZE -> a.size.compareTo(b.size)
@@ -403,11 +441,18 @@ fun NotesScreen(
                     count = state.selection.size,
                     canRename = state.selection.size == 1,
                     onClose = { vm.clearSelection() },
+                    onPin = { vm.togglePinSelected() },
                     onCopy = { vm.copySelected() },
                     onCut = { vm.cutSelected() },
                     onDelete = { showDeleteConfirm = true },
                     onRename = { renameTarget = state.selection.first() },
                     onSelectAll = { vm.selectAll() }
+                )
+            } else if (state.searching) {
+                NotesSearchBar(
+                    query = state.query,
+                    onQuery = { vm.setQuery(it) },
+                    onClose = { vm.toggleSearch() }
                 )
             } else {
                 TopAppBar(
@@ -417,6 +462,9 @@ fun NotesScreen(
                     },
                     actions = {
                         if (state.rootDir.isNotBlank()) {
+                            IconButton(onClick = { vm.toggleSearch() }) {
+                                Icon(Icons.Filled.Search, contentDescription = "Search")
+                            }
                             IconButton(onClick = { vm.toggleIncludeSub() }) {
                                 Icon(
                                     Icons.Filled.UnfoldMore,
@@ -606,22 +654,39 @@ private fun NoteRow(
             Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyLarge)
             Text(
-                when {
-                    entry.isDir -> "Folder"
-                    entry.subDir.isNotEmpty() -> "${kindLabel(entry.kind)}  •  ${entry.subDir}"
-                    else -> kindLabel(entry.kind)
-                },
+                noteMeta(entry),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
+        if (entry.pinned) {
+            Icon(
+                Icons.Filled.PushPin,
+                contentDescription = "Pinned",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
         if (selectionMode && selected) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = "Selected",
-                tint = MaterialTheme.colorScheme.primary)
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 8.dp)
+            )
         }
     }
+}
+
+private fun noteMeta(entry: NoteEntry): String = buildString {
+    append(if (entry.isDir) "Folder" else kindLabel(entry.kind))
+    if (!entry.isDir) {
+        append("  •  ").append(formatTimestamp(entry.modifiedTime))
+        append("  •  ").append(formatBytes(entry.size))
+    }
+    if (entry.subDir.isNotEmpty()) append("  •  ").append(entry.subDir)
 }
 
 private fun titleFor(state: NotesState): String {
@@ -644,6 +709,7 @@ private fun NotesSelectionBar(
     count: Int,
     canRename: Boolean,
     onClose: () -> Unit,
+    onPin: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
     onDelete: () -> Unit,
@@ -656,6 +722,9 @@ private fun NotesSelectionBar(
         },
         title = { Text("$count selected") },
         actions = {
+            IconButton(onClick = onPin) {
+                Icon(Icons.Filled.PushPin, contentDescription = "Pin / unpin")
+            }
             if (canRename) {
                 IconButton(onClick = onRename) {
                     Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
@@ -665,6 +734,31 @@ private fun NotesSelectionBar(
             IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
             IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NotesSearchBar(query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close search") }
+        },
+        title = {
+            TextField(
+                value = query,
+                onValueChange = onQuery,
+                placeholder = { Text("Search notes") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                )
+            )
         }
     )
 }
