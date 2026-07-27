@@ -15,10 +15,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,12 +46,17 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PdfViewerScreen(onBack: () -> Unit, onEditPages: () -> Unit = {}) {
+fun PdfViewerScreen(
+    onBack: () -> Unit,
+    onEditPages: () -> Unit = {},
+    onAnnotate: () -> Unit = {}
+) {
     val path = remember { PdfRequest.path }
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
     var pageCount by remember { mutableStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     var zoom by remember { mutableStateOf(1f) }
+    var menuOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(path) {
         if (path == null) {
@@ -88,8 +95,20 @@ fun PdfViewerScreen(onBack: () -> Unit, onEditPages: () -> Unit = {}) {
                     IconButton(onClick = { zoom = (zoom + 0.25f).coerceAtMost(4f) }) {
                         Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
                     }
-                    IconButton(onClick = onEditPages) {
-                        Icon(Icons.Filled.Edit, contentDescription = "Organize pages")
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Annotate") },
+                                onClick = { menuOpen = false; onAnnotate() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Organize pages") },
+                                onClick = { menuOpen = false; onEditPages() }
+                            )
+                        }
                     }
                 }
             )
