@@ -57,7 +57,8 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
     val file = remember(path) { path?.let { File(it) } }
     val lower = remember(path) { path?.lowercase() ?: "" }
 
-    val isRaw = lower.endsWith(".spd") || lower.endsWith(".sdoc") || lower.endsWith(".snb")
+    val isRaw = lower.endsWith(".spd") || lower.endsWith(".sdoc") || lower.endsWith(".sdocx") ||
+        lower.endsWith(".snb") || lower.endsWith(".memo")
     val isImage = listOf(".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif").any { lower.endsWith(it) }
     var converting by remember { mutableStateOf(false) }
 
