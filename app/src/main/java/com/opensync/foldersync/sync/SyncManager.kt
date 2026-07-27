@@ -49,13 +49,22 @@ class SyncManager(
         val engine = SyncEngine(local, remote, pair, tempDir)
         val start = System.currentTimeMillis()
 
+        // Publish live progress for the status UI, forwarding to the caller's notification progress.
+        SyncProgressBus.update(ActiveSync(pairId, pair.name, "Starting…", 0, 0))
+        val liveProgress = SyncEngine.Progress { message, done, total ->
+            SyncProgressBus.update(ActiveSync(pairId, pair.name, message, done, total))
+            progress?.update(message, done, total)
+        }
+
         val result = try {
-            engine.run(prevState, progress, isCancelled)
+            engine.run(prevState, liveProgress, isCancelled)
         } catch (e: Exception) {
             SyncEngine.Result(
                 success = false, filesCopied = 0, filesDeleted = 0, conflicts = 0, bytes = 0,
                 message = "Error: ${e.message ?: e.javaClass.simpleName}", newState = prevState
             )
+        } finally {
+            SyncProgressBus.clear(pairId)
         }
         val end = System.currentTimeMillis()
 
@@ -162,6 +171,13 @@ class SyncManager(
 
     suspend fun rescheduleAll() {
         db.folderPairDao().getAll().forEach { schedulePair(it) }
+    }
+
+    /** Stop a running/queued sync for this pair (both scheduled and one-off work). */
+    fun cancelSync(pairId: Long) {
+        val wm = WorkManager.getInstance(appContext)
+        wm.cancelUniqueWork(oneTimeName(pairId))
+        wm.cancelUniqueWork(periodicName(pairId))
     }
 
     private fun periodicName(id: Long) = "sync_$id"

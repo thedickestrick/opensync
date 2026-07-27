@@ -19,10 +19,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -37,6 +39,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.data.FolderPair
 import com.opensync.foldersync.data.ScheduleMode
+import com.opensync.foldersync.sync.ActiveSync
+import com.opensync.foldersync.sync.SyncProgressBus
 import com.opensync.foldersync.ui.components.StoragePermissionBanner
 import com.opensync.foldersync.ui.formatTimestamp
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,7 +53,17 @@ class FolderPairsViewModel : ViewModel() {
     val pairs = db.folderPairDao().observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** Live progress for currently running backups, keyed by pair id. */
+    val activeSyncs = SyncProgressBus.active
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     fun syncNow(id: Long) = Graph.syncManager.enqueueOneTime(id)
+
+    fun cancelSync(pairId: Long) = viewModelScope.launch {
+        Graph.syncManager.cancelSync(pairId)
+        // Cancelling clears any recurring schedule too; restore it for scheduled pairs.
+        db.folderPairDao().getById(pairId)?.let { Graph.syncManager.schedulePair(it) }
+    }
 
     fun setEnabled(pair: FolderPair, enabled: Boolean) = viewModelScope.launch {
         val updated = pair.copy(enabled = enabled)
@@ -67,6 +81,7 @@ fun FolderPairsScreen(
     vm: FolderPairsViewModel = viewModel()
 ) {
     val pairs by vm.pairs.collectAsState()
+    val activeSyncs by vm.activeSyncs.collectAsState()
 
     Scaffold(
         topBar = {
@@ -99,8 +114,10 @@ fun FolderPairsScreen(
                     items(pairs, key = { it.id }) { pair ->
                         FolderPairCard(
                             pair = pair,
+                            active = activeSyncs[pair.id],
                             onClick = { onEdit(pair.id) },
                             onSync = { vm.syncNow(pair.id) },
+                            onCancel = { vm.cancelSync(pair.id) },
                             onToggle = { vm.setEnabled(pair, it) }
                         )
                     }
@@ -114,8 +131,10 @@ fun FolderPairsScreen(
 @Composable
 private fun FolderPairCard(
     pair: FolderPair,
+    active: ActiveSync?,
     onClick: () -> Unit,
     onSync: () -> Unit,
+    onCancel: () -> Unit,
     onToggle: (Boolean) -> Unit
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -149,19 +168,53 @@ private fun FolderPairCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+
+            if (active != null) {
+                ActiveSyncSection(active = active, onCancel = onCancel)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${formatTimestamp(pair.lastSyncTime)}  •  ${pair.lastStatus.ifBlank { "Not synced" }}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    IconButton(onClick = onSync) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Sync now")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Live progress row shown on a pair card while it is syncing: bar, current file, and cancel. */
+@Composable
+private fun ActiveSyncSection(active: ActiveSync, onCancel: () -> Unit) {
+    Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (active.indeterminate) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else {
+            LinearProgressIndicator(progress = { active.fraction }, modifier = Modifier.fillMaxWidth())
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    "${formatTimestamp(pair.lastSyncTime)}  •  ${pair.lastStatus.ifBlank { "Not synced" }}",
+                    active.message.ifBlank { "Syncing…" },
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                IconButton(onClick = onSync) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "Sync now")
-                }
+                val counts = if (active.total > 0) "${active.done} / ${active.total} files" else "Scanning…"
+                Text(
+                    counts,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
+            TextButton(onClick = onCancel) { Text("Cancel") }
         }
     }
 }

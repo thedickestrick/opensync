@@ -39,6 +39,7 @@ import com.opensync.foldersync.pdf.PdfRequest
 import com.opensync.foldersync.ui.explorer.ExplorerScreen
 import com.opensync.foldersync.ui.gallery.GalleryScreen
 import com.opensync.foldersync.ui.pdf.PdfAnnotateScreen
+import com.opensync.foldersync.ui.pdf.PdfFormScreen
 import com.opensync.foldersync.ui.pdf.PdfPageOrganizerScreen
 import com.opensync.foldersync.ui.pdf.PdfSignScreen
 import com.opensync.foldersync.ui.pdf.PdfViewerScreen
@@ -93,7 +94,8 @@ fun AppRoot() {
                     onBack = { navController.popBackStack() },
                     onEditPages = { navController.navigate("pdf_pages") },
                     onAnnotate = { navController.navigate("pdf_annotate") },
-                    onSign = { navController.navigate("pdf_sign") }
+                    onSign = { navController.navigate("pdf_sign") },
+                    onFillForm = { navController.navigate("pdf_form") }
                 )
             }
             composable("pdf_pages") {
@@ -120,6 +122,17 @@ fun AppRoot() {
             }
             composable("pdf_sign") {
                 PdfSignScreen(
+                    onBack = { navController.popBackStack() },
+                    onSaved = { newPath ->
+                        PdfRequest.path = newPath
+                        navController.navigate("pdf") {
+                            popUpTo("files") { inclusive = false }
+                        }
+                    }
+                )
+            }
+            composable("pdf_form") {
+                PdfFormScreen(
                     onBack = { navController.popBackStack() },
                     onSaved = { newPath ->
                         PdfRequest.path = newPath
