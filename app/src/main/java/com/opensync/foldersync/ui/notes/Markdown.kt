@@ -23,6 +23,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -38,6 +39,7 @@ fun MarkdownView(
 ) {
     val lines = remember(text) { text.split("\n") }
     val imageRegex = remember { Regex("^!\\[.*?]\\((.+)\\)\\s*$") }
+    val numberedRegex = remember { Regex("^\\d{1,3}\\. .*") }
 
     Column(modifier.verticalScroll(rememberScrollState()).padding(4.dp)) {
         lines.forEachIndexed { index, line ->
@@ -84,6 +86,14 @@ fun MarkdownView(
                     Text(inlineMarkdown(line.substring(2)), style = MaterialTheme.typography.bodyLarge)
                 }
 
+                numberedRegex.matches(line) -> {
+                    val dot = line.indexOf(". ")
+                    Row(Modifier.padding(vertical = 1.dp)) {
+                        Text(line.substring(0, dot + 1) + "  ", style = MaterialTheme.typography.bodyLarge)
+                        Text(inlineMarkdown(line.substring(dot + 2)), style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+
                 line.startsWith("> ") -> Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = MaterialTheme.shapes.small,
@@ -121,6 +131,13 @@ fun inlineMarkdown(s: String): AnnotatedString = buildAnnotatedString {
                 val end = s.indexOf("**", i + 2)
                 if (end > 0) {
                     withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(s.substring(i + 2, end)) }
+                    i = end + 2
+                } else { append(s[i]); i++ }
+            }
+            s.startsWith("~~", i) -> {
+                val end = s.indexOf("~~", i + 2)
+                if (end > 0) {
+                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(s.substring(i + 2, end)) }
                     i = end + 2
                 } else { append(s[i]); i++ }
             }
