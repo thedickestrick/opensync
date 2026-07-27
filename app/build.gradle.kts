@@ -124,6 +124,9 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
 
+    // PDF editing (page ops, annotations, forms) — Apache PDFBox, Android port
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+
     // Remote storage protocols
     implementation("commons-net:commons-net:3.11.1")        // FTP / FTPS
     implementation("com.github.mwiede:jsch:0.2.20")          // SFTP (maintained JSch fork)

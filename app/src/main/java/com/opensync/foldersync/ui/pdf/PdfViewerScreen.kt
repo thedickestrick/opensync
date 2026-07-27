@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.CircularProgressIndicator
@@ -43,7 +44,7 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PdfViewerScreen(onBack: () -> Unit) {
+fun PdfViewerScreen(onBack: () -> Unit, onEditPages: () -> Unit = {}) {
     val path = remember { PdfRequest.path }
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
     var pageCount by remember { mutableStateOf(0) }
@@ -86,6 +87,9 @@ fun PdfViewerScreen(onBack: () -> Unit) {
                     }
                     IconButton(onClick = { zoom = (zoom + 0.25f).coerceAtMost(4f) }) {
                         Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
+                    }
+                    IconButton(onClick = onEditPages) {
+                        Icon(Icons.Filled.Edit, contentDescription = "Organize pages")
                     }
                 }
             )

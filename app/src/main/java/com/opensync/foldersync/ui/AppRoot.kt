@@ -38,6 +38,7 @@ import com.opensync.foldersync.ui.accounts.AccountsScreen
 import com.opensync.foldersync.pdf.PdfRequest
 import com.opensync.foldersync.ui.explorer.ExplorerScreen
 import com.opensync.foldersync.ui.gallery.GalleryScreen
+import com.opensync.foldersync.ui.pdf.PdfPageOrganizerScreen
 import com.opensync.foldersync.ui.pdf.PdfViewerScreen
 import com.opensync.foldersync.ui.logs.SyncLogScreen
 import com.opensync.foldersync.ui.pairs.FolderPairEditScreen
@@ -85,7 +86,23 @@ fun AppRoot() {
                 )
             }
             composable("gallery") { GalleryScreen(openDrawer = openDrawer) }
-            composable("pdf") { PdfViewerScreen(onBack = { navController.popBackStack() }) }
+            composable("pdf") {
+                PdfViewerScreen(
+                    onBack = { navController.popBackStack() },
+                    onEditPages = { navController.navigate("pdf_pages") }
+                )
+            }
+            composable("pdf_pages") {
+                PdfPageOrganizerScreen(
+                    onBack = { navController.popBackStack() },
+                    onSaved = { newPath ->
+                        PdfRequest.path = newPath
+                        navController.navigate("pdf") {
+                            popUpTo("files") { inclusive = false }
+                        }
+                    }
+                )
+            }
             composable("pairs") {
                 FolderPairsScreen(
                     openDrawer = openDrawer,
