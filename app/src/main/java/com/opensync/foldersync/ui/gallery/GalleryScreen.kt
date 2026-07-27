@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -73,6 +74,7 @@ import coil.compose.AsyncImage
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
+import com.opensync.foldersync.gallery.AlbumSort
 import com.opensync.foldersync.gallery.GallerySource
 import com.opensync.foldersync.gallery.MediaItem
 import com.opensync.foldersync.provider.RemoteFile
@@ -98,6 +100,8 @@ fun GalleryScreen(
         if (hasMedia) vm.reloadDevice()
     }
 
+    var sortMenuOpen by remember { mutableStateOf(false) }
+
     BackHandler(enabled = state.canBack) { vm.back() }
 
     Scaffold(
@@ -118,6 +122,27 @@ fun GalleryScreen(
                         accounts = accounts,
                         onPick = vm::setSource
                     )
+                },
+                actions = {
+                    // Sorting applies to the album grid (device source, not inside an album).
+                    if (state.source is GallerySource.Device && !state.inAlbum) {
+                        Box {
+                            IconButton(onClick = { sortMenuOpen = true }) {
+                                Icon(Icons.Filled.Sort, contentDescription = "Sort albums")
+                            }
+                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                                AlbumSort.entries.forEach { option ->
+                                    val marker = if (state.albumSort == option) {
+                                        if (state.albumAscending) " ↑" else " ↓"
+                                    } else ""
+                                    DropdownMenuItem(
+                                        text = { Text(option.label + marker) },
+                                        onClick = { vm.setAlbumSort(option); sortMenuOpen = false }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             )
         }

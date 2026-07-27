@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
+import com.opensync.foldersync.gallery.AlbumSort
 import com.opensync.foldersync.gallery.GalleryRepository
 import com.opensync.foldersync.gallery.GallerySource
 import com.opensync.foldersync.gallery.MediaItem
@@ -26,6 +27,8 @@ data class GalleryUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val albums: List<Album> = emptyList(),
+    val albumSort: AlbumSort = AlbumSort.DATE,
+    val albumAscending: Boolean = false,
     val inAlbum: Boolean = false,
     val title: String = "",
     val relDir: String = "",
@@ -52,6 +55,7 @@ class GalleryViewModel : ViewModel() {
     val remoteThumbs = _remoteThumbs.asStateFlow()
 
     private var thumbJob: Job? = null
+    private var rawAlbums: List<Album> = emptyList()
 
     init {
         loadDeviceAlbums()
@@ -86,12 +90,33 @@ class GalleryViewModel : ViewModel() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null, inAlbum = false, media = emptyList()) }
             try {
-                val albums = repo.deviceAlbums()
-                _state.update { it.copy(albums = albums, loading = false) }
+                rawAlbums = repo.deviceAlbums()
+                _state.update {
+                    it.copy(albums = sortAlbums(rawAlbums, it.albumSort, it.albumAscending), loading = false)
+                }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message ?: "Cannot read media") }
             }
         }
+    }
+
+    fun setAlbumSort(sort: AlbumSort) = _state.update {
+        val ascending = if (it.albumSort == sort) !it.albumAscending else (sort == AlbumSort.NAME)
+        it.copy(
+            albumSort = sort,
+            albumAscending = ascending,
+            albums = sortAlbums(rawAlbums, sort, ascending)
+        )
+    }
+
+    private fun sortAlbums(albums: List<Album>, sort: AlbumSort, ascending: Boolean): List<Album> {
+        val comparator = when (sort) {
+            AlbumSort.NAME -> compareBy<Album> { it.name.lowercase() }
+            AlbumSort.COUNT -> compareBy<Album> { it.count }
+            AlbumSort.DATE -> compareBy<Album> { it.latestDate }
+        }
+        val sorted = albums.sortedWith(comparator)
+        return if (ascending) sorted else sorted.reversed()
     }
 
     fun openDeviceAlbum(album: Album) {
