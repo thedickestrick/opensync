@@ -6,6 +6,7 @@ import androidx.work.Configuration
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 
 /** Application entry point: sets up the DI graph, notification channel, WorkManager and Coil. */
 class FolderSyncApp : Application(), Configuration.Provider, ImageLoaderFactory {
@@ -14,6 +15,7 @@ class FolderSyncApp : Application(), Configuration.Provider, ImageLoaderFactory 
         super.onCreate()
         Graph.init(this)
         Notifications.createChannels(this)
+        PDFBoxResourceLoader.init(this)
     }
 
     override val workManagerConfiguration: Configuration
