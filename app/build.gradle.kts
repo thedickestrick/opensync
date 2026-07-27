@@ -124,8 +124,11 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
 
-    // PDF editing (page ops, annotations, forms) — Apache PDFBox, Android port
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // PDF editing (page ops, annotations, forms) — Apache PDFBox, Android port.
+    // Exclude its bundled (older) BouncyCastle; reuse our bcprov-jdk18on to avoid duplicate classes.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
+        exclude(group = "org.bouncycastle")
+    }
 
     // Remote storage protocols
     implementation("commons-net:commons-net:3.11.1")        // FTP / FTPS
