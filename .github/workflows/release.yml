@@ -1,0 +1,86 @@
+name: Release APK
+
+# Push a tag like v1.2 (or run manually) to build a signed release APK and publish a GitHub
+# Release with it attached. The in-app updater then picks it up automatically.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version name, e.g. 1.2'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NAME="${{ github.event.inputs.version }}"
+          else
+            NAME="${GITHUB_REF_NAME}"
+          fi
+          NAME="${NAME#v}"
+          IFS='.' read -r MA MI PA <<< "$NAME"
+          CODE=$(( ${MA:-0} * 10000 + ${MI:-0} * 100 + ${PA:-0} ))
+          echo "name=$NAME"  >> "$GITHUB_OUTPUT"
+          echo "code=$CODE"  >> "$GITHUB_OUTPUT"
+          echo "tag=v$NAME"  >> "$GITHUB_OUTPUT"
+          echo "Building version $NAME (versionCode $CODE)"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Signing secrets are missing. Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD (see RELEASING.md)."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Build release APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease \
+            -PversionName=${{ steps.version.outputs.name }} \
+            -PversionCode=${{ steps.version.outputs.code }} \
+            --console=plain --no-daemon
+
+      - name: Stage APK
+        run: cp app/build/outputs/apk/release/app-release.apk "opensync-${{ steps.version.outputs.name }}.apk"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: OpenSync ${{ steps.version.outputs.name }}
+          generate_release_notes: true
+          files: opensync-${{ steps.version.outputs.name }}.apk

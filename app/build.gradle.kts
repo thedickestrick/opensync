@@ -13,8 +13,11 @@ val versionProps = Properties().apply {
     val f = rootProject.file("version.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-val appVersionCode = (versionProps.getProperty("versionCode") ?: "1").trim().toInt()
-val appVersionName = (versionProps.getProperty("versionName") ?: "1.0").trim()
+// CI passes -PversionName / -PversionCode (derived from the git tag); local builds use the file.
+val appVersionCode = ((project.findProperty("versionCode") as String?)
+    ?: versionProps.getProperty("versionCode") ?: "1").trim().toInt()
+val appVersionName = ((project.findProperty("versionName") as String?)
+    ?: versionProps.getProperty("versionName") ?: "1.0").trim()
 
 // Optional release signing. Create keystore.properties (git-ignored) to sign releases with
 // your own key; otherwise releases fall back to the debug key (fine for personal use).
