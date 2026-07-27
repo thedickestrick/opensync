@@ -99,7 +99,7 @@ class SmbProvider(
                     name = info.fileName,
                     isDirectory = isDir,
                     size = if (isDir) 0L else info.endOfFile,
-                    modifiedTime = info.lastWriteTime.toEpoch()
+                    modifiedTime = info.lastWriteTime.toEpoch(TimeUnit.MILLISECONDS)
                 )
             }
     }
@@ -112,7 +112,7 @@ class SmbProvider(
             name = PathUtil.name(relPath),
             isDirectory = std.isDirectory,
             size = if (std.isDirectory) 0L else std.endOfFile,
-            modifiedTime = info.basicInformation.lastWriteTime.toEpoch()
+            modifiedTime = info.basicInformation.lastWriteTime.toEpoch(TimeUnit.MILLISECONDS)
         )
     } catch (e: SMBApiException) {
         null
