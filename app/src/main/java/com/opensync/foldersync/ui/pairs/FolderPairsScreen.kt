@@ -36,6 +36,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.data.FolderPair
+import com.opensync.foldersync.data.ScheduleMode
 import com.opensync.foldersync.ui.components.StoragePermissionBanner
 import com.opensync.foldersync.ui.formatTimestamp
 import kotlinx.coroutines.flow.SharingStarted
@@ -141,6 +142,13 @@ private fun FolderPairCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            Text(
+                "⏱  ${scheduleLabel(pair)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "${formatTimestamp(pair.lastSyncTime)}  •  ${pair.lastStatus.ifBlank { "Not synced" }}",
@@ -167,6 +175,22 @@ private fun directionArrow(pair: FolderPair): String = when (pair.direction.name
 private fun remoteLabel(pair: FolderPair): String {
     val target = if (pair.remoteAccountId == null) "Local" else "Remote"
     return "$target: ${pair.remoteFolder.ifBlank { "/" }}"
+}
+
+private fun scheduleLabel(pair: FolderPair): String = when (pair.scheduleMode) {
+    ScheduleMode.MANUAL -> "Manual"
+    ScheduleMode.INTERVAL ->
+        if (pair.scheduleMinutes > 0) "Every ${pair.scheduleMinutes} min" else "Manual"
+    ScheduleMode.DAILY -> "Daily at %02d:%02d%s".format(
+        pair.dailyHour, pair.dailyMinute, daysSuffix(pair.daysOfWeek)
+    )
+}
+
+private fun daysSuffix(mask: Int): String {
+    if (mask == 0 || mask == 0b1111111) return ""
+    val letters = listOf("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa")
+    val on = letters.filterIndexed { i, _ -> (mask shr i) and 1 == 1 }
+    return " (${on.joinToString(",")})"
 }
 
 @Composable
