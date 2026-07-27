@@ -3,6 +3,7 @@ package com.opensync.foldersync.ui.gallery
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
+import com.opensync.foldersync.files.Clipboard
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
 import com.opensync.foldersync.gallery.AlbumSort
@@ -34,10 +35,16 @@ data class GalleryUiState(
     val relDir: String = "",
     val folders: List<RemoteFile> = emptyList(),
     val media: List<MediaItem> = emptyList(),
-    val viewerIndex: Int? = null
+    val viewerIndex: Int? = null,
+    val selection: Set<String> = emptySet(),
+    val hasClipboard: Boolean = false,
+    val busyMessage: String? = null
 ) {
+    val inSelectionMode: Boolean get() = selection.isNotEmpty()
+    val isProvider: Boolean get() = source is GallerySource.Provider
     val canBack: Boolean
-        get() = (source is GallerySource.Device && inAlbum) ||
+        get() = selection.isNotEmpty() ||
+            (source is GallerySource.Device && inAlbum) ||
             (source is GallerySource.Provider && relDir.isNotEmpty())
 }
 
@@ -151,12 +158,116 @@ class GalleryViewModel : ViewModel() {
     fun back() {
         val s = _state.value
         when {
+            s.selection.isNotEmpty() -> clearSelection()
             s.viewerIndex != null -> closeViewer()
             s.source is GallerySource.Device && s.inAlbum -> loadDeviceAlbums()
             s.source is GallerySource.Provider && s.relDir.isNotEmpty() ->
                 navigateProvider(s.relDir.trim('/').substringBeforeLast('/', ""))
         }
     }
+
+    // ---- File controls (folder-based sources) ----
+
+    private var clipboard: Clipboard? = null
+
+    fun toggleSelect(key: String) = _state.update {
+        val s = it.selection.toMutableSet()
+        if (!s.add(key)) s.remove(key)
+        it.copy(selection = s)
+    }
+
+    fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
+
+    fun selectAll() = _state.update {
+        val keys = it.folders.map { f -> f.relPath } + it.media.mapNotNull { m -> m.remoteFile?.relPath }
+        it.copy(selection = keys.toSet())
+    }
+
+    fun singleSelected(): RemoteFile? = selectedFiles().firstOrNull()
+
+    private fun selectedFiles(): List<RemoteFile> {
+        val st = _state.value
+        val folders = st.folders.filter { it.relPath in st.selection }
+        val media = st.media.mapNotNull { it.remoteFile }.filter { it.relPath in st.selection }
+        return folders + media
+    }
+
+    fun copySelected() {
+        if (_state.value.source !is GallerySource.Provider) return
+        clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = false)
+        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+    }
+
+    fun cutSelected() {
+        if (_state.value.source !is GallerySource.Provider) return
+        clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = true)
+        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+    }
+
+    fun clearClipboard() {
+        clipboard = null
+        _state.update { it.copy(hasClipboard = false) }
+    }
+
+    fun paste() {
+        val clip = clipboard ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busyMessage = "Preparing…") }
+            try {
+                repo.paste(
+                    clip, _state.value.relDir,
+                    { name -> _state.update { it.copy(busyMessage = "Copying $name") } },
+                    { false }
+                )
+                if (clip.move) clipboard = null
+                _state.update { it.copy(busyMessage = null, hasClipboard = clipboard != null) }
+                navigateProvider(_state.value.relDir)
+            } catch (e: Exception) {
+                _state.update { it.copy(busyMessage = null, error = e.message ?: "Paste failed") }
+            }
+        }
+    }
+
+    fun deleteSelected() {
+        val items = selectedFiles()
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busyMessage = "Deleting…") }
+            try {
+                repo.delete(items)
+                _state.update { it.copy(busyMessage = null, selection = emptySet()) }
+                navigateProvider(_state.value.relDir)
+            } catch (e: Exception) {
+                _state.update { it.copy(busyMessage = null, error = e.message ?: "Delete failed") }
+            }
+        }
+    }
+
+    fun renameItem(item: RemoteFile, newName: String) {
+        viewModelScope.launch {
+            try {
+                repo.rename(item, newName)
+                _state.update { it.copy(selection = emptySet()) }
+                navigateProvider(_state.value.relDir)
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Rename failed") }
+            }
+        }
+    }
+
+    fun newFolder(name: String) {
+        if (_state.value.source !is GallerySource.Provider) return
+        viewModelScope.launch {
+            try {
+                repo.createFolder(_state.value.relDir, name)
+                navigateProvider(_state.value.relDir)
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Cannot create folder") }
+            }
+        }
+    }
+
+    fun dismissError() = _state.update { it.copy(error = null) }
 
     fun openViewer(index: Int) = _state.update { it.copy(viewerIndex = index) }
     fun closeViewer() = _state.update { it.copy(viewerIndex = null) }
