@@ -159,7 +159,7 @@ class NotesViewModel : ViewModel() {
 
     private fun listDir(dir: File, recursive: Boolean): List<NoteEntry> {
         if (recursive) {
-            return dir.walkTopDown().maxDepth(8)
+            return dir.walkTopDown().onFail { _, _ -> }.maxDepth(8)
                 .filter { it.isFile }
                 .mapNotNull { f ->
                     kindOf(f.name)?.let { k ->
@@ -316,7 +316,8 @@ fun kindOf(name: String): NoteKind? {
     val n = name.lowercase()
     return when {
         n.endsWith(".pdf") -> NoteKind.PDF
-        n.endsWith(".spd") || n.endsWith(".sdoc") || n.endsWith(".snb") -> NoteKind.RAW
+        n.endsWith(".spd") || n.endsWith(".sdoc") || n.endsWith(".sdocx") ||
+            n.endsWith(".snb") || n.endsWith(".memo") -> NoteKind.RAW
         n.endsWith(".txt") || n.endsWith(".md") || n.endsWith(".rtf") -> NoteKind.TEXT
         listOf(".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif").any { n.endsWith(it) } -> NoteKind.IMAGE
         n.endsWith(".doc") || n.endsWith(".docx") -> NoteKind.OTHER
