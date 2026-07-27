@@ -8,7 +8,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -78,6 +82,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -596,10 +601,28 @@ private fun ZoomableImage(model: Any?) {
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
+            // Double-tap toggles between fit and 2.5× zoom.
             .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 6f)
-                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                detectTapGestures(onDoubleTap = {
+                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                })
+            }
+            // Only capture drags when pinching (2+ fingers) or already zoomed; otherwise let the
+            // pager receive the horizontal swipe so single-finger swipe moves to the next item.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val multiTouch = event.changes.count { it.pressed } > 1
+                        if (multiTouch || scale > 1f) {
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            scale = (scale * zoom).coerceIn(1f, 6f)
+                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
                 }
             }
             .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
