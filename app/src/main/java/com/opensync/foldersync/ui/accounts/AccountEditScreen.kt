@@ -241,7 +241,7 @@ fun AccountEditScreen(
                     Text(
                         when (type) {
                             AccountType.LOCAL -> "Base folder (absolute path)"
-                            AccountType.SMB -> "Share and path (e.g. /Backups/Phone)"
+                            AccountType.SMB -> "Path: blank or / lists all shares, or /Share/Folder"
                             else -> "Base path on server"
                         }
                     )
