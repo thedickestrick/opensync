@@ -73,15 +73,42 @@ class SmbProvider(
             .withTimeout(30, TimeUnit.SECONDS)
             .build()
         val c = SMBClient(config)
-        val conn = c.connect(host, if (port > 0) port else 445)
+
+        // Accept "server", "server.domain", or accidental UNC input like "\\server\share".
+        val cleanHost = host.trim().trim('\\', '/').substringBefore('\\').substringBefore('/')
+        val candidates = LinkedHashSet<String>().apply {
+            if (cleanHost.isNotEmpty()) add(cleanHost)
+            // Windows resolves short names via the domain suffix; Android doesn't, so try the FQDN.
+            if (!cleanHost.contains('.') && domain.isNotBlank()) add("$cleanHost.$domain")
+        }
+        val effectivePort = if (port > 0) port else 445
+
+        var established: Connection? = null
+        var lastError: Exception? = null
+        for (candidate in candidates) {
+            try {
+                established = c.connect(candidate, effectivePort)
+                break
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        if (established == null) {
+            runCatching { c.close() }
+            throw IOException(
+                "Can't reach SMB server '$cleanHost'. Use its full DNS name " +
+                    "(e.g. $cleanHost.your-domain) or its IP address. (${lastError?.message})"
+            )
+        }
+
         val auth = if (username.isBlank()) {
             AuthenticationContext.anonymous()
         } else {
             AuthenticationContext(username, password.toCharArray(), domain)
         }
-        session = conn.authenticate(auth)
+        session = established.authenticate(auth)
         client = c
-        connection = conn
+        connection = established
     }
 
     /** Disk share names available on the server (excludes IPC$ / printer shares). */
