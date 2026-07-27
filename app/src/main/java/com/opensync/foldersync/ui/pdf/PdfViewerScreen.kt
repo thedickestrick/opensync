@@ -49,7 +49,8 @@ import java.io.File
 fun PdfViewerScreen(
     onBack: () -> Unit,
     onEditPages: () -> Unit = {},
-    onAnnotate: () -> Unit = {}
+    onAnnotate: () -> Unit = {},
+    onSign: () -> Unit = {}
 ) {
     val path = remember { PdfRequest.path }
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
@@ -103,6 +104,10 @@ fun PdfViewerScreen(
                             DropdownMenuItem(
                                 text = { Text("Annotate") },
                                 onClick = { menuOpen = false; onAnnotate() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Sign") },
+                                onClick = { menuOpen = false; onSign() }
                             )
                             DropdownMenuItem(
                                 text = { Text("Organize pages") },
