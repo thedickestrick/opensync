@@ -24,6 +24,7 @@ data class ParsedNote(
  */
 object NoteParser {
     private val IMAGE_EXTS = listOf(".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    private val TEXT_EXTS = listOf(".json", ".xml", ".html", ".htm", ".txt")
     private const val MIN_IMAGE_BYTES = 2_048
     private const val MAX_TEXT_ENTRY_BYTES = 6_000_000
 
@@ -36,16 +37,17 @@ object NoteParser {
         val text = StringBuilder()
 
         val zipOk = runCatching { readZip(src, outDir, images, text) }.getOrDefault(false)
-        if (!zipOk || (images.isEmpty() && text.isBlank())) {
-            // Not a (readable) zip, or the zip gave us nothing usable — carve the raw bytes.
+        // Only byte-carve when the file isn't a valid zip; carving compressed zip data yields junk.
+        if (!zipOk) {
             runCatching { carve(src.readBytes(), outDir, images, text) }
         }
 
         val cleaned = cleanText(text.toString())
         val note = when {
             images.isEmpty() && cleaned.isBlank() ->
-                "No typed text or images could be extracted. This note may be handwriting only, " +
-                    "encrypted, or a cloud backup. Export it from Samsung Notes as PDF, Text, or Image."
+                "No typed text or images could be extracted from this note. Its text may be stored in a " +
+                    "compressed/binary stream this version can't read yet. For now, export it from Samsung " +
+                    "Notes as PDF or Text, or send a sample so support can add your format."
             else -> null
         }
         ParsedNote(title, images.sorted(), cleaned, note)
@@ -64,10 +66,18 @@ object NoteParser {
                 val bytes = runCatching { zip.getInputStream(e).use { it.readBytes() } }.getOrNull() ?: continue
                 when {
                     IMAGE_EXTS.any { lower.endsWith(it) } -> addImage(bytes, outDir, idx++, images)
-                    bytes.size <= MAX_TEXT_ENTRY_BYTES -> {
+                    bytes.size > MAX_TEXT_ENTRY_BYTES -> Unit
+                    // Real text entries: parse JSON / strip markup.
+                    TEXT_EXTS.any { lower.endsWith(it) } -> {
                         val decoded = decodeText(bytes)
-                        if (looksLikeJson(decoded)) extractJsonText(decoded, text)
+                        if (looksLikeJson(decoded)) extractJsonStrict(decoded, text)
                         else extractLooseText(decoded, text)
+                    }
+                    // Unknown/binary entries (stroke data, resources): only mine if they are actually
+                    // valid JSON — otherwise skip so we never emit binary junk.
+                    else -> {
+                        val decoded = decodeText(bytes)
+                        if (looksLikeJson(decoded)) extractJsonStrict(decoded, text)
                     }
                 }
             }
@@ -173,16 +183,16 @@ object NoteParser {
         return t.startsWith("{") || t.startsWith("[")
     }
 
-    private fun extractJsonText(json: String, out: StringBuilder) {
+    /** Extract prose from JSON only if it genuinely parses; never fall back to loose scraping (avoids junk). */
+    private fun extractJsonStrict(json: String, out: StringBuilder) {
         try {
             val t = json.trim()
             when {
                 t.startsWith("{") -> walkJson(JSONObject(t), out)
                 t.startsWith("[") -> walkJson(JSONArray(t), out)
-                else -> extractLooseText(json, out)
             }
         } catch (_: Exception) {
-            extractLooseText(json, out)
+            // Not valid JSON — ignore rather than emit binary noise.
         }
     }
 
@@ -197,10 +207,15 @@ object NoteParser {
         }
     }
 
+    private val PROSE_PUNCT = ".,!?;:'\"()[]{}-–—/@#%&*+=_·…".toSet()
+
     private fun looksLikeProse(s: String): Boolean {
         val t = s.trim()
         if (t.length < 2) return false
         if (t.count { it.isLetter() } < 2) return false
+        // Reject strings dominated by odd/binary characters (the main source of junk).
+        val clean = t.count { it.isLetterOrDigit() || it.isWhitespace() || it in PROSE_PUNCT }
+        if (clean.toDouble() / t.length < 0.9) return false
         if (t.length > 40 && !t.contains(' ')) return false           // long unbroken token = id/blob
         if (t.matches(Regex("^[0-9a-fA-F-]{8,}$"))) return false        // uuid/hex
         if (t.matches(Regex("^[A-Za-z0-9+/=]{40,}$"))) return false     // base64 blob
