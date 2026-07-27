@@ -26,7 +26,8 @@ object UpdateChecker {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun latestRelease(owner: String, repo: String): Release = withContext(Dispatchers.IO) {
+    /** Latest release, or null if the repo has no published releases yet (GitHub returns 404). */
+    suspend fun latestRelease(owner: String, repo: String): Release? = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$owner/$repo/releases/latest"
         val req = Request.Builder()
             .url(url)
@@ -34,6 +35,7 @@ object UpdateChecker {
             .header("User-Agent", "OpenSync")
             .build()
         client.newCall(req).execute().use { resp ->
+            if (resp.code == 404) return@withContext null
             if (!resp.isSuccessful) throw IOException("GitHub responded ${resp.code}")
             val json = JSONObject(resp.body?.string().orEmpty())
             val tag = json.optString("tag_name")
