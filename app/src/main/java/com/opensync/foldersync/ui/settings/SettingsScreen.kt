@@ -101,6 +101,13 @@ class SettingsViewModel : ViewModel() {
             _update.update { it.copy(checking = true, status = null, available = null) }
             try {
                 val release = UpdateChecker.latestRelease(s.owner.trim(), s.repo.trim())
+                if (release == null) {
+                    _update.update {
+                        it.copy(checking = false, available = null,
+                            status = "No releases published in ${s.owner}/${s.repo} yet")
+                    }
+                    return@launch
+                }
                 val newer = UpdateChecker.isNewer(release.tag, s.current)
                 _update.update {
                     it.copy(
