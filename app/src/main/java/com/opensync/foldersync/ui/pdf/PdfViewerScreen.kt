@@ -50,7 +50,8 @@ fun PdfViewerScreen(
     onBack: () -> Unit,
     onEditPages: () -> Unit = {},
     onAnnotate: () -> Unit = {},
-    onSign: () -> Unit = {}
+    onSign: () -> Unit = {},
+    onFillForm: () -> Unit = {}
 ) {
     val path = remember { PdfRequest.path }
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
@@ -108,6 +109,10 @@ fun PdfViewerScreen(
                             DropdownMenuItem(
                                 text = { Text("Sign") },
                                 onClick = { menuOpen = false; onSign() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Fill form") },
+                                onClick = { menuOpen = false; onFillForm() }
                             )
                             DropdownMenuItem(
                                 text = { Text("Organize pages") },
