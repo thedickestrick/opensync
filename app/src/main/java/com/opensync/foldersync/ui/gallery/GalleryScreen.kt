@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -62,6 +63,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -120,7 +122,11 @@ fun GalleryScreen(
             )
         }
     ) { inner ->
-        Column(Modifier.padding(inner).fillMaxSize()) {
+        // Apply the top inset (below the app bar) but let the grid run to the bottom edge, behind
+        // the transparent nav bar; the bar height is handed to the grid as scroll padding.
+        Column(
+            Modifier.padding(top = inner.calculateTopPadding()).fillMaxSize()
+        ) {
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
 
             if (state.source is GallerySource.Device && !hasMedia) {
@@ -138,12 +144,17 @@ fun GalleryScreen(
             val showAlbums = state.source is GallerySource.Device && !state.inAlbum
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (showAlbums) {
-                    AlbumGrid(albums = state.albums, onOpen = vm::openDeviceAlbum)
+                    AlbumGrid(
+                        albums = state.albums,
+                        bottomInset = inner.calculateBottomPadding(),
+                        onOpen = vm::openDeviceAlbum
+                    )
                 } else {
                     MediaGrid(
                         folders = state.folders,
                         media = state.media,
                         thumbs = thumbs,
+                        bottomInset = inner.calculateBottomPadding(),
                         onOpenFolder = vm::openFolder,
                         onOpenMedia = vm::openViewer
                     )
@@ -209,7 +220,7 @@ private fun MediaPermissionPrompt(onGrant: () -> Unit) {
 }
 
 @Composable
-private fun AlbumGrid(albums: List<Album>, onOpen: (Album) -> Unit) {
+private fun AlbumGrid(albums: List<Album>, bottomInset: Dp, onOpen: (Album) -> Unit) {
     if (albums.isEmpty()) {
         EmptyBox("No albums")
         return
@@ -217,7 +228,7 @@ private fun AlbumGrid(albums: List<Album>, onOpen: (Album) -> Unit) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(120.dp),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)
+        contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 8.dp + bottomInset)
     ) {
         items(albums, key = { it.id }) { album ->
             Column(Modifier.padding(6.dp).clickable { onOpen(album) }) {
@@ -236,6 +247,7 @@ private fun MediaGrid(
     folders: List<RemoteFile>,
     media: List<MediaItem>,
     thumbs: Map<String, File>,
+    bottomInset: Dp,
     onOpenFolder: (RemoteFile) -> Unit,
     onOpenMedia: (Int) -> Unit
 ) {
@@ -246,7 +258,7 @@ private fun MediaGrid(
     LazyVerticalGrid(
         columns = GridCells.Adaptive(110.dp),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)
+        contentPadding = PaddingValues(start = 6.dp, top = 6.dp, end = 6.dp, bottom = 6.dp + bottomInset)
     ) {
         items(folders, key = { "f:${it.relPath}" }) { folder ->
             Column(
