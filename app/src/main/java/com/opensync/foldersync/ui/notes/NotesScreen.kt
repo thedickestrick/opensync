@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -77,6 +78,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
+import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.notes.NoteConverter
 import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.Dispatchers
@@ -93,7 +95,9 @@ data class NoteEntry(
     val path: String,
     val isDir: Boolean,
     val kind: NoteKind?,
-    val subDir: String = ""
+    val subDir: String = "",
+    val size: Long = 0,
+    val modifiedTime: Long = 0
 )
 
 data class NotesState(
@@ -102,6 +106,8 @@ data class NotesState(
     val entries: List<NoteEntry> = emptyList(),
     val loading: Boolean = false,
     val includeSub: Boolean = true,
+    val sortBy: SortBy = SortBy.NAME,
+    val ascending: Boolean = true,
     val selection: Set<String> = emptySet(),
     val clipboard: List<String> = emptyList(),
     val clipboardCut: Boolean = false,
@@ -115,6 +121,7 @@ class NotesViewModel : ViewModel() {
     private val prefs = AppPrefs(Graph.appContext)
     private val _state = MutableStateFlow(NotesState())
     val state = _state.asStateFlow()
+    private var rawEntries: List<NoteEntry> = emptyList()
 
     init {
         val root = prefs.notesDir
@@ -147,14 +154,42 @@ class NotesViewModel : ViewModel() {
         if (s.currentDir.isBlank()) return
         _state.value = s.copy(loading = true)
         viewModelScope.launch {
-            val entries = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
-            _state.value = _state.value.copy(entries = entries, loading = false)
+            rawEntries = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
+            pushSorted()
         }
     }
 
     fun toggleIncludeSub() {
         _state.value = _state.value.copy(includeSub = !_state.value.includeSub, selection = emptySet())
         rescan()
+    }
+
+    /** Toggles direction when the same key is chosen again, matching the Files explorer. */
+    fun setSort(sortBy: SortBy) {
+        val s = _state.value
+        val ascending = if (s.sortBy == sortBy) !s.ascending else true
+        _state.value = s.copy(sortBy = sortBy, ascending = ascending)
+        pushSorted()
+    }
+
+    private fun pushSorted() {
+        val s = _state.value
+        _state.value = s.copy(entries = sortEntries(rawEntries, s.sortBy, s.ascending), loading = false)
+    }
+
+    private fun sortEntries(list: List<NoteEntry>, sortBy: SortBy, ascending: Boolean): List<NoteEntry> {
+        val cmp = Comparator<NoteEntry> { a, b ->
+            if (a.isDir != b.isDir) return@Comparator if (a.isDir) -1 else 1
+            val k = when (sortBy) {
+                SortBy.NAME -> a.name.compareTo(b.name, ignoreCase = true)
+                SortBy.SIZE -> a.size.compareTo(b.size)
+                SortBy.DATE -> a.modifiedTime.compareTo(b.modifiedTime)
+                SortBy.TYPE -> a.name.substringAfterLast('.', "")
+                    .compareTo(b.name.substringAfterLast('.', ""), ignoreCase = true)
+            }
+            if (ascending) k else -k
+        }
+        return list.sortedWith(cmp)
     }
 
     private fun listDir(dir: File, recursive: Boolean): List<NoteEntry> {
@@ -165,20 +200,19 @@ class NotesViewModel : ViewModel() {
                     kindOf(f.name)?.let { k ->
                         val sub = f.parentFile?.relativeToOrNull(dir)?.path
                             ?.takeIf { it.isNotEmpty() && it != "." } ?: ""
-                        NoteEntry(f.name, f.absolutePath, false, k, sub)
+                        NoteEntry(f.name, f.absolutePath, false, k, sub, f.length(), f.lastModified())
                     }
                 }
                 .take(4000)
-                .sortedWith(compareBy({ it.subDir.lowercase() }, { it.name.lowercase() }))
                 .toList()
         }
         val files = dir.listFiles() ?: return emptyList()
         val dirs = files.filter { it.isDirectory }
-            .map { NoteEntry(it.name, it.absolutePath, true, null) }
-            .sortedBy { it.name.lowercase() }
+            .map { NoteEntry(it.name, it.absolutePath, true, null, "", 0L, it.lastModified()) }
         val notes = files.filter { it.isFile }
-            .mapNotNull { f -> kindOf(f.name)?.let { NoteEntry(f.name, f.absolutePath, false, it) } }
-            .sortedBy { it.name.lowercase() }
+            .mapNotNull { f ->
+                kindOf(f.name)?.let { NoteEntry(f.name, f.absolutePath, false, it, "", f.length(), f.lastModified()) }
+            }
         return dirs + notes
     }
 
@@ -344,6 +378,7 @@ fun NotesScreen(
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var sortOpen by remember { mutableStateOf(false) }
 
     BackHandler(enabled = state.selectionMode || state.canGoUp) {
         if (state.selectionMode) vm.clearSelection() else vm.up()
@@ -389,6 +424,22 @@ fun NotesScreen(
                                     tint = if (state.includeSub) MaterialTheme.colorScheme.primary
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                            }
+                            Box {
+                                IconButton(onClick = { sortOpen = true }) {
+                                    Icon(Icons.Filled.Sort, contentDescription = "Sort")
+                                }
+                                DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                                    SortBy.entries.forEach { s ->
+                                        val marker = if (state.sortBy == s) {
+                                            if (state.ascending) "  ↑" else "  ↓"
+                                        } else ""
+                                        DropdownMenuItem(
+                                            text = { Text(s.label + marker) },
+                                            onClick = { vm.setSort(s); sortOpen = false }
+                                        )
+                                    }
+                                }
                             }
                         }
                         Box {

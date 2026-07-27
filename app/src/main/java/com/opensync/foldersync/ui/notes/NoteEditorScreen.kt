@@ -12,11 +12,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
@@ -181,7 +184,10 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     onHeading = { linePrefix("# ") },
                     onBold = { wrap("**", "**") },
                     onItalic = { wrap("_", "_") },
+                    onStrike = { wrap("~~", "~~") },
+                    onCode = { wrap("`", "`") },
                     onBullet = { linePrefix("- ") },
+                    onNumbered = { linePrefix("1. ") },
                     onChecklist = { linePrefix("- [ ] ") },
                     onQuote = { linePrefix("> ") }
                 )
@@ -201,7 +207,10 @@ private fun FormattingToolbar(
     onHeading: () -> Unit,
     onBold: () -> Unit,
     onItalic: () -> Unit,
+    onStrike: () -> Unit,
+    onCode: () -> Unit,
     onBullet: () -> Unit,
+    onNumbered: () -> Unit,
     onChecklist: () -> Unit,
     onQuote: () -> Unit
 ) {
@@ -209,7 +218,10 @@ private fun FormattingToolbar(
         IconButton(onClick = onHeading) { Icon(Icons.Filled.Title, contentDescription = "Heading") }
         IconButton(onClick = onBold) { Icon(Icons.Filled.FormatBold, contentDescription = "Bold") }
         IconButton(onClick = onItalic) { Icon(Icons.Filled.FormatItalic, contentDescription = "Italic") }
+        IconButton(onClick = onStrike) { Icon(Icons.Filled.FormatStrikethrough, contentDescription = "Strikethrough") }
+        IconButton(onClick = onCode) { Icon(Icons.Filled.Code, contentDescription = "Code") }
         IconButton(onClick = onBullet) { Icon(Icons.Filled.FormatListBulleted, contentDescription = "Bullet list") }
+        IconButton(onClick = onNumbered) { Icon(Icons.Filled.FormatListNumbered, contentDescription = "Numbered list") }
         IconButton(onClick = onChecklist) { Icon(Icons.Filled.CheckBox, contentDescription = "Checklist") }
         IconButton(onClick = onQuote) { Icon(Icons.Filled.FormatQuote, contentDescription = "Quote") }
     }
