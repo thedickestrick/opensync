@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.Clipboard
+import com.opensync.foldersync.files.DEFAULT_LOCAL_DIR
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
 import com.opensync.foldersync.gallery.AlbumSort
@@ -90,7 +91,9 @@ class GalleryViewModel : ViewModel() {
                 GallerySource.Device -> loadDeviceAlbums()
                 is GallerySource.Provider -> {
                     repo.setProviderLocation(source.location)
-                    navigateProvider("")
+                    // Local storage: start at the user's storage root, not the filesystem root "/".
+                    val start = if (source.location == ExplorerLocation.LocalRoot) DEFAULT_LOCAL_DIR else ""
+                    navigateProvider(start)
                 }
             }
         }
