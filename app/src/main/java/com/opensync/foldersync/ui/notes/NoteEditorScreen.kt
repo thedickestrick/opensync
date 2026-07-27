@@ -10,16 +10,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatStrikethrough
+import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
@@ -30,14 +34,17 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
@@ -65,6 +72,11 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var loaded by remember { mutableStateOf(existing == null) }
     var saving by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf(false) }
+    var showFind by remember { mutableStateOf(false) }
+    var findText by remember { mutableStateOf("") }
+    var replaceText by remember { mutableStateOf("") }
+    val undoStack = remember { mutableStateListOf<TextFieldValue>() }
+    val redoStack = remember { mutableStateListOf<TextFieldValue>() }
 
     LaunchedEffect(path) {
         if (existing != null) {
@@ -74,6 +86,28 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         }
     }
 
+    // Records an edit for undo (text changes only; caps history).
+    fun commit(newValue: TextFieldValue) {
+        if (newValue.text != body.text) {
+            undoStack.add(body)
+            if (undoStack.size > 200) undoStack.removeAt(0)
+            redoStack.clear()
+        }
+        body = newValue
+    }
+
+    fun undo() {
+        if (undoStack.isEmpty()) return
+        redoStack.add(body)
+        body = undoStack.removeAt(undoStack.size - 1)
+    }
+
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        undoStack.add(body)
+        body = redoStack.removeAt(redoStack.size - 1)
+    }
+
     fun wrap(pre: String, post: String) {
         val s = body.text
         val start = minOf(body.selection.start, body.selection.end)
@@ -81,7 +115,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         val selected = s.substring(start, end)
         val nt = s.substring(0, start) + pre + selected + post + s.substring(end)
         val cursor = if (selected.isEmpty()) start + pre.length else start + pre.length + selected.length + post.length
-        body = TextFieldValue(nt, TextRange(cursor))
+        commit(TextFieldValue(nt, TextRange(cursor)))
     }
 
     fun linePrefix(prefix: String) {
@@ -89,7 +123,15 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         val pos = minOf(body.selection.start, body.selection.end)
         val lineStart = s.lastIndexOf('\n', (pos - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
         val nt = s.substring(0, lineStart) + prefix + s.substring(lineStart)
-        body = TextFieldValue(nt, TextRange(pos + prefix.length))
+        commit(TextFieldValue(nt, TextRange(pos + prefix.length)))
+    }
+
+    fun insertBlock(block: String) {
+        val s = body.text
+        val pos = minOf(body.selection.start, body.selection.end)
+        val lead = if (pos == 0 || s[pos - 1] == '\n') "" else "\n"
+        val nt = s.substring(0, pos) + lead + block + s.substring(pos)
+        commit(TextFieldValue(nt, TextRange(pos + lead.length + block.length)))
     }
 
     fun toggleCheckbox(index: Int) {
@@ -102,7 +144,20 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             l.startsWith("- [X] ") -> l.replaceFirst("- [X] ", "- [ ] ")
             else -> l
         }
-        body = body.copy(text = lines.joinToString("\n"))
+        commit(body.copy(text = lines.joinToString("\n")))
+    }
+
+    fun findNext() {
+        if (findText.isEmpty()) return
+        val from = maxOf(body.selection.end, 0)
+        var idx = body.text.indexOf(findText, from, ignoreCase = true)
+        if (idx < 0) idx = body.text.indexOf(findText, 0, ignoreCase = true)  // wrap around
+        if (idx >= 0) body = body.copy(selection = TextRange(idx, idx + findText.length))
+    }
+
+    fun replaceAll() {
+        if (findText.isEmpty()) return
+        commit(body.copy(text = body.text.replace(findText, replaceText, ignoreCase = true)))
     }
 
     fun save() {
@@ -146,6 +201,11 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     }
                 },
                 actions = {
+                    if (!preview) {
+                        IconButton(onClick = { showFind = !showFind }) {
+                            Icon(Icons.Filled.FindReplace, contentDescription = "Find & replace")
+                        }
+                    }
                     IconButton(onClick = { preview = !preview }) {
                         Icon(
                             if (preview) Icons.Filled.Edit else Icons.Filled.Visibility,
@@ -180,7 +240,21 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     )
                 }
             } else {
+                if (showFind) {
+                    FindReplaceBar(
+                        find = findText,
+                        replace = replaceText,
+                        onFind = { findText = it },
+                        onReplace = { replaceText = it },
+                        onNext = { findNext() },
+                        onReplaceAll = { replaceAll() }
+                    )
+                }
                 FormattingToolbar(
+                    canUndo = undoStack.isNotEmpty(),
+                    canRedo = redoStack.isNotEmpty(),
+                    onUndo = { undo() },
+                    onRedo = { redo() },
                     onHeading = { linePrefix("# ") },
                     onBold = { wrap("**", "**") },
                     onItalic = { wrap("_", "_") },
@@ -189,11 +263,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     onBullet = { linePrefix("- ") },
                     onNumbered = { linePrefix("1. ") },
                     onChecklist = { linePrefix("- [ ] ") },
-                    onQuote = { linePrefix("> ") }
+                    onQuote = { linePrefix("> ") },
+                    onTable = { insertBlock("| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |\n") }
                 )
                 OutlinedTextField(
                     value = body,
-                    onValueChange = { body = it },
+                    onValueChange = { commit(it) },
                     label = { Text("Write your note…  (Markdown supported)") },
                     modifier = Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)
                 )
@@ -204,6 +279,10 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
 
 @Composable
 private fun FormattingToolbar(
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onHeading: () -> Unit,
     onBold: () -> Unit,
     onItalic: () -> Unit,
@@ -212,9 +291,16 @@ private fun FormattingToolbar(
     onBullet: () -> Unit,
     onNumbered: () -> Unit,
     onChecklist: () -> Unit,
-    onQuote: () -> Unit
+    onQuote: () -> Unit,
+    onTable: () -> Unit
 ) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        IconButton(onClick = onUndo, enabled = canUndo) {
+            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+        }
+        IconButton(onClick = onRedo, enabled = canRedo) {
+            Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+        }
         IconButton(onClick = onHeading) { Icon(Icons.Filled.Title, contentDescription = "Heading") }
         IconButton(onClick = onBold) { Icon(Icons.Filled.FormatBold, contentDescription = "Bold") }
         IconButton(onClick = onItalic) { Icon(Icons.Filled.FormatItalic, contentDescription = "Italic") }
@@ -224,6 +310,40 @@ private fun FormattingToolbar(
         IconButton(onClick = onNumbered) { Icon(Icons.Filled.FormatListNumbered, contentDescription = "Numbered list") }
         IconButton(onClick = onChecklist) { Icon(Icons.Filled.CheckBox, contentDescription = "Checklist") }
         IconButton(onClick = onQuote) { Icon(Icons.Filled.FormatQuote, contentDescription = "Quote") }
+        IconButton(onClick = onTable) { Icon(Icons.Filled.TableChart, contentDescription = "Table") }
+    }
+}
+
+@Composable
+private fun FindReplaceBar(
+    find: String,
+    replace: String,
+    onFind: (String) -> Unit,
+    onReplace: (String) -> Unit,
+    onNext: () -> Unit,
+    onReplaceAll: () -> Unit
+) {
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = find,
+                onValueChange = onFind,
+                label = { Text("Find") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onNext) { Text("Next") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = replace,
+                onValueChange = onReplace,
+                label = { Text("Replace with") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onReplaceAll) { Text("All") }
+        }
     }
 }
 

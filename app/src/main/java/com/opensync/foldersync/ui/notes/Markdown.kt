@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.notes
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,8 +43,20 @@ fun MarkdownView(
     val numberedRegex = remember { Regex("^\\d{1,3}\\. .*") }
 
     Column(modifier.verticalScroll(rememberScrollState()).padding(4.dp)) {
-        lines.forEachIndexed { index, line ->
+        var i = 0
+        while (i < lines.size) {
+            val index = i
+            val line = lines[index]
             val trimmed = line.trim()
+            if (isTableRow(line) && index + 1 < lines.size && isTableSeparator(lines[index + 1])) {
+                val header = parseRow(line)
+                val rows = ArrayList<List<String>>()
+                var j = index + 2
+                while (j < lines.size && isTableRow(lines[j])) { rows.add(parseRow(lines[j])); j++ }
+                MarkdownTable(header, rows)
+                i = j
+                continue
+            }
             when {
                 line.isBlank() -> Spacer(Modifier.height(8.dp))
 
@@ -108,6 +121,51 @@ fun MarkdownView(
 
                 else -> Text(inlineMarkdown(line), style = MaterialTheme.typography.bodyLarge)
             }
+            i++
+        }
+    }
+}
+
+private fun isTableRow(line: String): Boolean {
+    val t = line.trim()
+    return t.startsWith("|") && t.count { it == '|' } >= 2
+}
+
+private fun isTableSeparator(line: String): Boolean {
+    val t = line.trim()
+    if (!t.startsWith("|")) return false
+    return t.trim('|').split("|").all { cell ->
+        val c = cell.trim()
+        c.isNotEmpty() && c.contains('-') && c.all { it == '-' || it == ':' || it == ' ' }
+    }
+}
+
+private fun parseRow(line: String): List<String> {
+    var t = line.trim()
+    if (t.startsWith("|")) t = t.substring(1)
+    if (t.endsWith("|")) t = t.substring(0, t.length - 1)
+    return t.split("|").map { it.trim() }
+}
+
+@Composable
+private fun MarkdownTable(header: List<String>, rows: List<List<String>>) {
+    val cols = maxOf(header.size, rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+    val border = MaterialTheme.colorScheme.outline
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        TableRowView(header, cols, border, isHeader = true)
+        rows.forEach { TableRowView(it, cols, border, isHeader = false) }
+    }
+}
+
+@Composable
+private fun TableRowView(cells: List<String>, cols: Int, border: androidx.compose.ui.graphics.Color, isHeader: Boolean) {
+    Row(Modifier.fillMaxWidth()) {
+        for (c in 0 until cols) {
+            Text(
+                inlineMarkdown(cells.getOrElse(c) { "" }),
+                style = if (isHeader) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f).border(0.5.dp, border).padding(6.dp)
+            )
         }
     }
 }
