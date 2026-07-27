@@ -1,0 +1,352 @@
+package com.opensync.foldersync.ui.pairs
+
+import android.os.Environment
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.opensync.foldersync.Graph
+import com.opensync.foldersync.data.Account
+import com.opensync.foldersync.data.ConflictRule
+import com.opensync.foldersync.data.FolderPair
+import com.opensync.foldersync.data.SyncDirection
+import com.opensync.foldersync.ui.components.DropdownField
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import java.io.File
+
+class FolderPairEditViewModel : ViewModel() {
+    private val db = Graph.database
+
+    val accounts = db.accountDao().observeAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _pair = MutableStateFlow(FolderPair(name = "", localFolder = "", remoteFolder = ""))
+    val pair = _pair.asStateFlow()
+    private var loaded = false
+
+    fun load(id: Long) {
+        if (loaded) return
+        loaded = true
+        if (id > 0) viewModelScope.launch { db.folderPairDao().getById(id)?.let { _pair.value = it } }
+    }
+
+    fun update(transform: (FolderPair) -> FolderPair) { _pair.value = transform(_pair.value) }
+
+    fun save(onDone: () -> Unit) = viewModelScope.launch {
+        val p = _pair.value
+        val id = if (p.id == 0L) db.folderPairDao().insert(p) else {
+            db.folderPairDao().update(p); p.id
+        }
+        Graph.syncManager.schedulePair(p.copy(id = id))
+        onDone()
+    }
+
+    fun delete(onDone: () -> Unit) = viewModelScope.launch {
+        val p = _pair.value
+        if (p.id != 0L) {
+            db.folderPairDao().delete(p)
+            db.syncStateDao().deleteForPair(p.id)
+            Graph.syncManager.schedulePair(p.copy(enabled = false))
+        }
+        onDone()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FolderPairEditScreen(
+    pairId: Long,
+    onBack: () -> Unit,
+    vm: FolderPairEditViewModel = viewModel()
+) {
+    LaunchedEffect(pairId) { vm.load(pairId) }
+    val pair by vm.pair.collectAsState()
+    val accounts by vm.accounts.collectAsState()
+
+    var showLocalPicker by remember { mutableStateOf(false) }
+    var showRemotePicker by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (pair.id == 0L) "New folder pair" else "Edit folder pair") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    TextButton(
+                        onClick = { vm.save(onBack) },
+                        enabled = pair.name.isNotBlank() && pair.localFolder.isNotBlank()
+                    ) { Text("Save") }
+                }
+            )
+        }
+    ) { inner ->
+        Column(
+            Modifier
+                .padding(inner)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = pair.name,
+                onValueChange = { v -> vm.update { it.copy(name = v) } },
+                label = { Text("Name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = pair.localFolder,
+                onValueChange = { v -> vm.update { it.copy(localFolder = v) } },
+                label = { Text("Local folder") },
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(onClick = { showLocalPicker = true }) {
+                        Icon(Icons.Filled.Folder, contentDescription = "Browse")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            val remoteOptions: List<Account?> = listOf<Account?>(null) + accounts
+            val selectedRemote = remoteOptions.firstOrNull { it?.id == pair.remoteAccountId }
+            DropdownField(
+                label = "Remote target",
+                options = remoteOptions,
+                selected = selectedRemote,
+                optionLabel = { acc -> acc?.let { "${it.name} (${it.type.label})" } ?: "Local device folder" },
+                onSelected = { acc -> vm.update { it.copy(remoteAccountId = acc?.id) } }
+            )
+
+            val remoteTrailing: (@Composable () -> Unit)? =
+                if (pair.remoteAccountId == null) {
+                    {
+                        IconButton(onClick = { showRemotePicker = true }) {
+                            Icon(Icons.Filled.Folder, contentDescription = "Browse")
+                        }
+                    }
+                } else null
+            OutlinedTextField(
+                value = pair.remoteFolder,
+                onValueChange = { v -> vm.update { it.copy(remoteFolder = v) } },
+                label = {
+                    Text(if (pair.remoteAccountId == null) "Second local folder" else "Remote sub-folder")
+                },
+                singleLine = true,
+                trailingIcon = remoteTrailing,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            DropdownField(
+                label = "Direction",
+                options = SyncDirection.entries,
+                selected = pair.direction,
+                optionLabel = { it.label },
+                onSelected = { d -> vm.update { it.copy(direction = d) } }
+            )
+
+            DropdownField(
+                label = "Conflict resolution",
+                options = ConflictRule.entries,
+                selected = pair.conflictRule,
+                optionLabel = { it.label },
+                onSelected = { c -> vm.update { it.copy(conflictRule = c) } }
+            )
+
+            SwitchRow("Include subfolders", pair.includeSubfolders) { b ->
+                vm.update { it.copy(includeSubfolders = b) }
+            }
+            SwitchRow("Propagate deletions (delete orphans)", pair.deleteOrphans) { b ->
+                vm.update { it.copy(deleteOrphans = b) }
+            }
+            SwitchRow("Only on Wi-Fi", pair.requireWifi) { b ->
+                vm.update { it.copy(requireWifi = b) }
+            }
+            SwitchRow("Only while charging", pair.requireCharging) { b ->
+                vm.update { it.copy(requireCharging = b) }
+            }
+            SwitchRow("Enabled", pair.enabled) { b ->
+                vm.update { it.copy(enabled = b) }
+            }
+
+            OutlinedTextField(
+                value = pair.includeFilter,
+                onValueChange = { v -> vm.update { it.copy(includeFilter = v) } },
+                label = { Text("Include patterns (e.g. *.jpg, *.png)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = pair.excludeFilter,
+                onValueChange = { v -> vm.update { it.copy(excludeFilter = v) } },
+                label = { Text("Exclude patterns (e.g. *.tmp, .DS_Store)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = if (pair.scheduleMinutes == 0) "" else pair.scheduleMinutes.toString(),
+                onValueChange = { v ->
+                    vm.update { it.copy(scheduleMinutes = v.filter(Char::isDigit).toIntOrNull() ?: 0) }
+                },
+                label = { Text("Auto-sync every N minutes (blank = manual; min 15)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (pair.id != 0L) {
+                OutlinedButton(
+                    onClick = { vm.delete(onBack) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Delete folder pair") }
+            }
+        }
+    }
+
+    if (showLocalPicker) {
+        FolderPickerDialog(
+            initial = pair.localFolder,
+            onDismiss = { showLocalPicker = false },
+            onSelect = { path -> vm.update { it.copy(localFolder = path) }; showLocalPicker = false }
+        )
+    }
+    if (showRemotePicker) {
+        FolderPickerDialog(
+            initial = pair.remoteFolder,
+            onDismiss = { showRemotePicker = false },
+            onSelect = { path -> vm.update { it.copy(remoteFolder = path) }; showRemotePicker = false }
+        )
+    }
+}
+
+@Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun FolderPickerDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val root = remember {
+        val f = File(initial)
+        when {
+            initial.isBlank() -> Environment.getExternalStorageDirectory() ?: File("/storage/emulated/0")
+            f.isDirectory -> f
+            f.parentFile != null -> f.parentFile!!
+            else -> Environment.getExternalStorageDirectory() ?: File("/storage/emulated/0")
+        }
+    }
+    var current by remember { mutableStateOf(root) }
+    val subDirs = remember(current) {
+        current.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } ?: emptyList()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(current.absolutePath, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleSmall)
+        },
+        text = {
+            LazyColumn(Modifier.height(320.dp)) {
+                current.parentFile?.let { parent ->
+                    item {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { current = parent }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Filled.Folder, contentDescription = null)
+                            Text("  ..  (up)", modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+                items(subDirs, key = { it.absolutePath }) { dir ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { current = dir }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Folder, contentDescription = null)
+                        Text(dir.name, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+                if (subDirs.isEmpty()) {
+                    item { Text("(no sub-folders)", Modifier.padding(vertical = 12.dp)) }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSelect(current.absolutePath) }) { Text("Select this folder") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
