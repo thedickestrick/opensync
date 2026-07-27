@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">OpenSync</string>
+
+    <string name="tab_pairs">Folder pairs</string>
+    <string name="tab_accounts">Accounts</string>
+    <string name="tab_logs">Sync log</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="sync_channel_name">Synchronization</string>
+    <string name="sync_channel_desc">Shows progress while folders are being synced.</string>
+</resources>
