@@ -267,8 +267,6 @@ class GalleryViewModel : ViewModel() {
         }
     }
 
-    fun dismissError() = _state.update { it.copy(error = null) }
-
     fun openViewer(index: Int) = _state.update { it.copy(viewerIndex = index) }
     fun closeViewer() = _state.update { it.copy(viewerIndex = null) }
     fun dismissError() = _state.update { it.copy(error = null) }
