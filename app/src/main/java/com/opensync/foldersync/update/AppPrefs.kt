@@ -19,9 +19,15 @@ class AppPrefs(context: Context) {
         get() = prefs.getString(KEY_NOTES_DIR, "") ?: ""
         set(value) { prefs.edit().putString(KEY_NOTES_DIR, value).apply() }
 
+    /** Absolute paths of pinned notes. */
+    var pinnedNotes: Set<String>
+        get() = prefs.getStringSet(KEY_PINNED, emptySet())?.toSet() ?: emptySet()
+        set(value) { prefs.edit().putStringSet(KEY_PINNED, value).apply() }
+
     private companion object {
         const val KEY_OWNER = "update_owner"
         const val KEY_REPO = "update_repo"
         const val KEY_NOTES_DIR = "notes_dir"
+        const val KEY_PINNED = "pinned_notes"
     }
 }
