@@ -33,7 +33,8 @@ class GalleryRepository(private val context: Context) {
                     id = bucketId,
                     name = sorted.first().bucketName,
                     count = sorted.size,
-                    coverModel = sorted.first().uri
+                    coverModel = sorted.first().uri,
+                    latestDate = sorted.first().date
                 )
             }
             .sortedBy { it.name.lowercase() }

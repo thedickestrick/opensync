@@ -15,8 +15,15 @@ data class Album(
     val id: String,
     val name: String,
     val count: Int,
-    val coverModel: Any?
+    val coverModel: Any?,
+    val latestDate: Long = 0L
 )
+
+enum class AlbumSort(val label: String) {
+    NAME("Name"),
+    COUNT("Item count"),
+    DATE("Most recent")
+}
 
 /** A single photo or video. [thumbModel] and full content are Coil-compatible (Uri or File). */
 data class MediaItem(
