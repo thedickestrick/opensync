@@ -113,7 +113,14 @@ fun AppRoot() {
                 )
             }
             composable("note_view") {
-                NoteViewerScreen(onBack = { navController.popBackStack() })
+                NoteViewerScreen(
+                    onBack = { navController.popBackStack() },
+                    onEdit = { p ->
+                        NoteEditRequest.path = p
+                        NoteEditRequest.dir = null
+                        navController.navigate("note_edit") { popUpTo("notes") }
+                    }
+                )
             }
             composable("note_edit") {
                 NoteEditorScreen(

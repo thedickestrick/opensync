@@ -14,7 +14,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -27,9 +27,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -37,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.opensync.foldersync.notes.NoteConverter
 import com.opensync.foldersync.notes.NoteParser
 import com.opensync.foldersync.notes.NoteRequest
 import com.opensync.foldersync.notes.ParsedNote
@@ -47,7 +50,7 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NoteViewerScreen(onBack: () -> Unit) {
+fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
     val path = remember { NoteRequest.path }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -56,8 +59,9 @@ fun NoteViewerScreen(onBack: () -> Unit) {
 
     val isRaw = lower.endsWith(".spd") || lower.endsWith(".sdoc") || lower.endsWith(".snb")
     val isImage = listOf(".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif").any { lower.endsWith(it) }
+    var converting by remember { mutableStateOf(false) }
 
-    // Parse raw Samsung Notes files once, so the top bar can offer "Save as .txt".
+    // Parse raw Samsung Notes files once so we can preview and convert them.
     val parsed: ParsedNote? = if (isRaw && file != null) {
         val f = file
         val s by produceState<ParsedNote?>(initialValue = null, f.absolutePath) {
@@ -66,19 +70,18 @@ fun NoteViewerScreen(onBack: () -> Unit) {
         s
     } else null
 
-    fun saveExtractedText() {
+    fun convertAndEdit() {
         val src = file ?: return
-        val text = parsed?.text ?: return
+        converting = true
         scope.launch {
-            val dest = File(src.parentFile, "${src.nameWithoutExtension} (text).txt")
-            val ok = withContext(Dispatchers.IO) {
-                runCatching { dest.writeText(text) }.isSuccess
+            val md = withContext(Dispatchers.IO) { NoteConverter.toMarkdown(context, src) }
+            converting = false
+            if (md != null) {
+                Toast.makeText(context, "Converted → ${md.name}", Toast.LENGTH_SHORT).show()
+                onEdit(md.absolutePath)
+            } else {
+                Toast.makeText(context, "Couldn't convert this note", Toast.LENGTH_LONG).show()
             }
-            Toast.makeText(
-                context,
-                if (ok) "Saved → ${dest.name}" else "Couldn't save here",
-                Toast.LENGTH_LONG
-            ).show()
         }
     }
 
@@ -92,9 +95,9 @@ fun NoteViewerScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
-                    if (isRaw && !parsed?.text.isNullOrBlank()) {
-                        IconButton(onClick = { saveExtractedText() }) {
-                            Icon(Icons.Filled.SaveAlt, contentDescription = "Save extracted text")
+                    if (isRaw) {
+                        IconButton(onClick = { convertAndEdit() }, enabled = parsed != null && !converting) {
+                            Icon(Icons.Filled.Edit, contentDescription = "Convert to editable note")
                         }
                     }
                 }

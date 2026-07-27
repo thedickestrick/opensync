@@ -77,6 +77,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
+import com.opensync.foldersync.notes.NoteConverter
 import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -257,6 +258,23 @@ class NotesViewModel : ViewModel() {
         }
     }
 
+    /** Convert every raw Samsung Notes file currently listed into an editable .md note. */
+    fun convertImported() {
+        val raws = _state.value.entries.filter { it.kind == NoteKind.RAW }.map { it.path }
+        if (raws.isEmpty()) {
+            _state.value = _state.value.copy(error = "No .spd/.sdoc notes here to convert")
+            return
+        }
+        _state.value = _state.value.copy(loading = true)
+        viewModelScope.launch {
+            val made = withContext(Dispatchers.IO) {
+                raws.count { NoteConverter.toMarkdown(Graph.appContext, File(it)) != null }
+            }
+            _state.value = _state.value.copy(error = "Converted $made note(s) to editable .md")
+            rescan()
+        }
+    }
+
     fun dismissError() { _state.value = _state.value.copy(error = null) }
 
     private fun pasteInto(destDir: File, src: File, cut: Boolean) {
@@ -378,6 +396,10 @@ fun NotesScreen(
                                 DropdownMenuItem(
                                     text = { Text("New folder") },
                                     onClick = { menuOpen = false; showNewFolder = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Convert imported notes (.spd → .md)") },
+                                    onClick = { menuOpen = false; vm.convertImported() }
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Change notes folder") },
