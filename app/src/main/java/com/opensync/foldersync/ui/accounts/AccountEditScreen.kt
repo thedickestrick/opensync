@@ -176,7 +176,7 @@ fun AccountEditScreen(
                 options = AccountType.entries,
                 selected = type,
                 optionLabel = { it.label },
-                onSelected = { t -> vm.update { it.copy(type = t) } }
+                onSelected = { t -> vm.update { acc -> acc.copy(type = t, useTls = if (t == AccountType.S3) true else acc.useTls) } }
             )
 
             if (isRemote) {
@@ -188,6 +188,7 @@ fun AccountEditScreen(
                             when (type) {
                                 AccountType.WEBDAV -> "Server URL (https://host/path)"
                                 AccountType.SMB -> "Server (IP or hostname)"
+                                AccountType.S3 -> "Endpoint (e.g. s3.us-west-002.backblazeb2.com)"
                                 else -> "Host"
                             }
                         )
@@ -195,11 +196,16 @@ fun AccountEditScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (type == AccountType.SMB) {
+                if (type == AccountType.SMB || type == AccountType.S3) {
                     OutlinedTextField(
                         value = account.domain,
                         onValueChange = { v -> vm.update { it.copy(domain = v) } },
-                        label = { Text("Windows domain (blank for workgroup / local)") },
+                        label = {
+                            Text(
+                                if (type == AccountType.S3) "Region (e.g. us-east-1, us-west-002, auto)"
+                                else "Windows domain (blank for workgroup / local)"
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -215,14 +221,14 @@ fun AccountEditScreen(
                 OutlinedTextField(
                     value = account.username,
                     onValueChange = { v -> vm.update { it.copy(username = v) } },
-                    label = { Text("Username") },
+                    label = { Text(if (type == AccountType.S3) "Access key ID" else "Username") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = password,
                     onValueChange = { vm.setPassword(it) },
-                    label = { Text("Password") },
+                    label = { Text(if (type == AccountType.S3) "Secret access key" else "Password") },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
@@ -242,6 +248,7 @@ fun AccountEditScreen(
                         when (type) {
                             AccountType.LOCAL -> "Base folder (absolute path)"
                             AccountType.SMB -> "Path: blank or / lists all shares, or /Share/Folder"
+                            AccountType.S3 -> "Bucket name"
                             else -> "Base path on server"
                         }
                     )
@@ -253,10 +260,10 @@ fun AccountEditScreen(
             if (type == AccountType.FTP || type == AccountType.FTPS) {
                 SwitchRow("Passive mode", account.passiveMode) { b -> vm.update { it.copy(passiveMode = b) } }
             }
-            if (type == AccountType.WEBDAV) {
+            if (type == AccountType.WEBDAV || type == AccountType.S3) {
                 SwitchRow("Use HTTPS", account.useTls) { b -> vm.update { it.copy(useTls = b) } }
             }
-            if (type == AccountType.FTPS || type == AccountType.WEBDAV) {
+            if (type == AccountType.FTPS || type == AccountType.WEBDAV || type == AccountType.S3) {
                 SwitchRow("Accept self-signed certificates", account.allowSelfSigned) { b ->
                     vm.update { it.copy(allowSelfSigned = b) }
                 }

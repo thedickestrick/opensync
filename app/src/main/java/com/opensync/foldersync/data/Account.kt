@@ -15,7 +15,8 @@ enum class AccountType(val label: String) {
     FTPS("FTP over TLS (FTPS)"),
     SFTP("SFTP (SSH)"),
     WEBDAV("WebDAV"),
-    SMB("SMB / Windows share")
+    SMB("SMB / Windows share"),
+    S3("S3 cloud (AWS / B2 / Wasabi / R2 …)")
 }
 
 /**
@@ -43,6 +44,7 @@ data class Account(
         AccountType.SFTP -> 22
         AccountType.WEBDAV -> if (useTls) 443 else 80
         AccountType.SMB -> 445
+        AccountType.S3 -> if (useTls) 443 else 80
         AccountType.LOCAL -> 0
     }
 }
