@@ -533,30 +533,34 @@ private fun MediaViewer(
     if (items.isEmpty()) { onClose(); return }
     BackHandler(enabled = true) { onClose() }
     val pagerState = rememberPagerState(initialPage = startIndex.coerceIn(0, items.size - 1)) { items.size }
+    // Controls hidden by default for a clean full-screen picture; tap toggles them.
+    var chromeVisible by remember { mutableStateOf(false) }
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
         Box(Modifier.fillMaxSize()) {
             HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                MediaPage(items[page], materialize)
+                MediaPage(items[page], materialize, onTap = { chromeVisible = !chromeVisible })
             }
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp)
-            ) {
-                Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
+            if (chromeVisible) {
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp)
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
+                }
+                Text(
+                    items[pagerState.currentPage].name,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
+                )
             }
-            Text(
-                items[pagerState.currentPage].name,
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
-            )
         }
     }
 }
 
 @Composable
-private fun MediaPage(item: MediaItem, materialize: suspend (MediaItem) -> File) {
+private fun MediaPage(item: MediaItem, materialize: suspend (MediaItem) -> File, onTap: () -> Unit) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
         value = item.deviceUri ?: runCatching { materialize(item) }.getOrNull()
     }
@@ -564,7 +568,7 @@ private fun MediaPage(item: MediaItem, materialize: suspend (MediaItem) -> File)
         when {
             model == null -> CircularProgressIndicator(color = Color.White)
             item.isVideo -> VideoPlayer(model!!)
-            else -> ZoomableImage(model)
+            else -> ZoomableImage(model, onTap = onTap)
         }
     }
 }
@@ -592,7 +596,7 @@ private fun VideoPlayer(model: Any) {
 }
 
 @Composable
-private fun ZoomableImage(model: Any?) {
+private fun ZoomableImage(model: Any?, onTap: () -> Unit = {}) {
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     AsyncImage(
@@ -601,11 +605,14 @@ private fun ZoomableImage(model: Any?) {
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
-            // Double-tap toggles between fit and 2.5× zoom.
+            // Single tap toggles controls; double-tap toggles between fit and 2.5× zoom.
             .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = {
-                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                })
+                detectTapGestures(
+                    onTap = { onTap() },
+                    onDoubleTap = {
+                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                    }
+                )
             }
             // Only capture drags when pinching (2+ fingers) or already zoomed; otherwise let the
             // pager receive the horizontal swipe so single-finger swipe moves to the next item.

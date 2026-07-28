@@ -1,5 +1,6 @@
 package com.opensync.foldersync
 
+import android.app.Activity
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -39,8 +40,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -107,25 +111,39 @@ private fun MediaPager(items: List<MediaEntry>, startIndex: Int, onClose: () -> 
     val pagerState = rememberPagerState(initialPage = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) {
         items.size
     }
+    // Controls hidden by default for a clean full-screen picture; tap toggles them.
+    var chromeVisible by remember { mutableStateOf(false) }
+
+    val view = LocalView.current
+    LaunchedEffect(chromeVisible) {
+        val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (chromeVisible) controller.show(WindowInsetsCompat.Type.systemBars())
+        else controller.hide(WindowInsetsCompat.Type.systemBars())
+    }
+
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val item = items[page]
             if (item.isVideo) VideoPage(item.uri, active = pagerState.currentPage == page)
-            else ImagePage(item.uri)
+            else ImagePage(item.uri, onTap = { chromeVisible = !chromeVisible })
         }
-        CloseButton(onClose)
-        if (items.size > 1) {
-            Text(
-                "${pagerState.currentPage + 1} / ${items.size}",
-                color = Color.White,
-                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
-            )
+        if (chromeVisible) {
+            CloseButton(onClose)
+            if (items.size > 1) {
+                Text(
+                    "${pagerState.currentPage + 1} / ${items.size}",
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ImagePage(uri: Uri) {
+private fun ImagePage(uri: Uri, onTap: () -> Unit) {
     var scale by remember(uri) { mutableStateOf(1f) }
     var offset by remember(uri) { mutableStateOf(Offset.Zero) }
     AsyncImage(
@@ -135,9 +153,12 @@ private fun ImagePage(uri: Uri) {
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(uri) {
-                detectTapGestures(onDoubleTap = {
-                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                })
+                detectTapGestures(
+                    onTap = { onTap() },
+                    onDoubleTap = {
+                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                    }
+                )
             }
             // Only capture drags when pinching or zoomed, so single-finger swipes reach the pager.
             .pointerInput(uri) {
