@@ -17,6 +17,7 @@ import com.opensync.foldersync.files.ShareInbox
 import com.opensync.foldersync.files.ShareRequest
 import com.opensync.foldersync.files.SharedItem
 import com.opensync.foldersync.provider.DropboxAuth
+import com.opensync.foldersync.provider.OneDriveAuth
 import kotlinx.coroutines.launch
 import com.opensync.foldersync.ui.AppRoot
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
@@ -60,6 +61,11 @@ class MainActivity : ComponentActivity() {
                         val code = data.getQueryParameter("code")
                         if (code != null) lifecycleScope.launch { DropboxAuth.complete(code) }
                         else DropboxAuth.fail(data.getQueryParameter("error_description") ?: "Dropbox sign-in cancelled")
+                    }
+                    data?.scheme == "opensync" && data.host == "onedrive" -> {
+                        val code = data.getQueryParameter("code")
+                        if (code != null) lifecycleScope.launch { OneDriveAuth.complete(code) }
+                        else OneDriveAuth.fail(data.getQueryParameter("error_description") ?: "OneDrive sign-in cancelled")
                     }
                     data?.scheme == "file" -> {
                         val f = File(data.path.orEmpty())

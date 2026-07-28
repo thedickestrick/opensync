@@ -63,12 +63,13 @@
                 <data android:mimeType="vnd.android.document/directory" />
             </intent-filter>
 
-            <!-- Dropbox OAuth redirect (opensync://dropbox). -->
+            <!-- Cloud OAuth redirects (opensync://dropbox, opensync://onedrive). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="opensync" android:host="dropbox" />
+                <data android:scheme="opensync" android:host="onedrive" />
             </intent-filter>
         </activity>
 
