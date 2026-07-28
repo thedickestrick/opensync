@@ -99,6 +99,11 @@ class AccountEditViewModel : ViewModel() {
         _test.value = TestState.Idle
     }
 
+    /** Fill in a default account name if the user hasn't set one (so the account can be saved). */
+    fun ensureName(default: String) {
+        if (_account.value.name.isBlank()) _account.value = _account.value.copy(name = default)
+    }
+
     fun testConnection() = viewModelScope.launch {
         _test.value = TestState.Testing
         val error = withContext(Dispatchers.IO) {
@@ -150,18 +155,25 @@ fun AccountEditScreen(
     val type = account.type
     val isRemote = type != AccountType.LOCAL
 
-    // Pick up the refresh token once the OAuth redirect completes.
+    // Pick up the refresh token once the OAuth redirect completes (and ensure the account has a
+    // name so it can actually be saved and reused later).
     val dbxToken by DropboxAuth.refreshToken.collectAsState()
     LaunchedEffect(dbxToken) {
-        if (type == AccountType.DROPBOX) dbxToken?.let { vm.setPassword(it); DropboxAuth.refreshToken.value = null }
+        if (type == AccountType.DROPBOX) dbxToken?.let {
+            vm.setPassword(it); vm.ensureName("Dropbox"); DropboxAuth.refreshToken.value = null
+        }
     }
     val odToken by OneDriveAuth.refreshToken.collectAsState()
     LaunchedEffect(odToken) {
-        if (type == AccountType.ONEDRIVE) odToken?.let { vm.setPassword(it); OneDriveAuth.refreshToken.value = null }
+        if (type == AccountType.ONEDRIVE) odToken?.let {
+            vm.setPassword(it); vm.ensureName("OneDrive"); OneDriveAuth.refreshToken.value = null
+        }
     }
     val gdToken by GoogleDriveAuth.refreshToken.collectAsState()
     LaunchedEffect(gdToken) {
-        if (type == AccountType.GOOGLE_DRIVE) gdToken?.let { vm.setPassword(it); GoogleDriveAuth.refreshToken.value = null }
+        if (type == AccountType.GOOGLE_DRIVE) gdToken?.let {
+            vm.setPassword(it); vm.ensureName("Google Drive"); GoogleDriveAuth.refreshToken.value = null
+        }
     }
 
     Scaffold(
@@ -202,7 +214,15 @@ fun AccountEditScreen(
                 options = AccountType.entries,
                 selected = type,
                 optionLabel = { it.label },
-                onSelected = { t -> vm.update { acc -> acc.copy(type = t, useTls = if (t == AccountType.S3) true else acc.useTls) } }
+                onSelected = { t ->
+                    vm.update { acc ->
+                        acc.copy(
+                            type = t,
+                            useTls = if (t == AccountType.S3) true else acc.useTls,
+                            name = acc.name.ifBlank { defaultAccountName(t) }
+                        )
+                    }
+                }
             )
 
             if (type == AccountType.DROPBOX || type == AccountType.ONEDRIVE) {
@@ -399,6 +419,12 @@ private fun OAuthSection(
         color = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
         style = MaterialTheme.typography.bodyMedium
     )
+}
+
+private fun defaultAccountName(t: AccountType): String = when (t) {
+    AccountType.LOCAL -> ""
+    AccountType.S3 -> "S3 cloud"
+    else -> t.label
 }
 
 @Composable
