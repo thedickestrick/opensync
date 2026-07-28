@@ -23,10 +23,13 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
@@ -54,9 +57,13 @@ import com.opensync.foldersync.ui.logs.SyncLogScreen
 import com.opensync.foldersync.ui.pairs.FolderPairEditScreen
 import com.opensync.foldersync.ui.pairs.FolderPairsScreen
 import com.opensync.foldersync.ui.settings.SettingsScreen
+import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.launch
 
 private data class DrawerEntry(val route: String, val label: String, val icon: ImageVector)
+
+/** Top-level destinations whose selection is remembered across app launches. */
+private val PERSISTED_ROUTES = setOf("files", "gallery", "notes", "pairs", "logs", "accounts", "settings")
 
 @Composable
 fun AppRoot() {
@@ -66,6 +73,15 @@ fun AppRoot() {
 
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+
+    val context = LocalContext.current
+    val prefs = remember { AppPrefs(context) }
+    val startRoute = remember { prefs.lastRoute.takeIf { it in PERSISTED_ROUTES } ?: "files" }
+    // Remember the last top-level screen so the app reopens where it was left.
+    LaunchedEffect(currentRoute) {
+        val r = currentRoute
+        if (r != null && r in PERSISTED_ROUTES) prefs.lastRoute = r
+    }
 
     val fullscreen by FullscreenState.active.collectAsState()
     val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
@@ -87,7 +103,7 @@ fun AppRoot() {
             DrawerContent(currentRoute = currentRoute, onNavigate = navigateTo)
         }
     ) {
-        NavHost(navController = navController, startDestination = "files") {
+        NavHost(navController = navController, startDestination = startRoute) {
             composable("files") {
                 ExplorerScreen(
                     openDrawer = openDrawer,
