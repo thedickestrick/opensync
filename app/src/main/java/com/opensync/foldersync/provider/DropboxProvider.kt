@@ -41,8 +41,12 @@ class DropboxProvider(
 
     override fun connect() {
         refreshAccess()
-        // Validate the token/scopes cheaply.
-        postJson("$API/2/users/get_current_account", "null")
+        // Validate with a files-scope call. (get_current_account needs the account_info.read scope,
+        // which many app registrations don't grant — that would 401 even when file access is fine.)
+        postJson(
+            "$API/2/files/list_folder",
+            JSONObject().put("path", "").put("limit", 1).toString()
+        )
     }
 
     override fun listDir(relDir: String): List<RemoteFile> {
