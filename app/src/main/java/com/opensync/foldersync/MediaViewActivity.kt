@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
@@ -105,15 +106,10 @@ private fun MediaSwiper(items: List<MediaEntry>, startIndex: Int) {
     var index by remember { mutableStateOf(startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) }
     Box(Modifier.fillMaxSize()) {
         val item = items.getOrNull(index) ?: return@Box
-        if (item.isVideo) {
-            VideoPage(item.uri)
-        } else {
-            SwipeImage(
-                uri = item.uri,
-                onPrev = { if (index > 0) index-- },
-                onNext = { if (index < items.size - 1) index++ }
-            )
-        }
+        val onPrev = { if (index > 0) index-- }
+        val onNext = { if (index < items.size - 1) index++ }
+        if (item.isVideo) VideoPage(item.uri, onPrev, onNext)
+        else SwipeImage(item.uri, onPrev, onNext)
     }
 }
 
@@ -164,7 +160,7 @@ private fun SwipeImage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
 }
 
 @Composable
-private fun VideoPage(uri: Uri) {
+private fun VideoPage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
     val context = LocalContext.current
     val exo = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
@@ -174,8 +170,37 @@ private fun VideoPage(uri: Uri) {
         }
     }
     DisposableEffect(uri) { onDispose { exo.release() } }
-    AndroidView(
-        factory = { ctx -> PlayerView(ctx).apply { player = exo } },
-        modifier = Modifier.fillMaxSize()
-    )
+    Box(Modifier.fillMaxSize().horizontalSwipe(uri, onPrev, onNext)) {
+        AndroidView(
+            factory = { ctx -> PlayerView(ctx).apply { player = exo } },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 }
+
+/**
+ * Detects a horizontal swipe on the Initial pointer pass and consumes it, so a swipe changes item
+ * while taps still reach the video's play/pause controls underneath.
+ */
+private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () -> Unit): Modifier =
+    pointerInput(key) {
+        val slop = viewConfiguration.touchSlop
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            var dx = 0f
+            var dy = 0f
+            var claimed = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val pan = event.calculatePan()
+                dx += pan.x; dy += pan.y
+                if (!claimed && abs(dx) > slop && abs(dx) > abs(dy)) claimed = true
+                if (claimed) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                if (event.changes.none { it.pressed }) break
+            }
+            if (claimed) {
+                val threshold = size.width * 0.15f
+                if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
+            }
+        }
+    }
