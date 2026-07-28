@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.gallery
 
+import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -29,8 +30,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -85,6 +84,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -92,7 +92,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
+import kotlin.math.abs
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
@@ -532,35 +535,37 @@ private fun MediaViewer(
 ) {
     if (items.isEmpty()) { onClose(); return }
     BackHandler(enabled = true) { onClose() }
-    val pagerState = rememberPagerState(initialPage = startIndex.coerceIn(0, items.size - 1)) { items.size }
-    // Controls hidden by default for a clean full-screen picture; tap toggles them.
-    var chromeVisible by remember { mutableStateOf(false) }
+    var index by remember { mutableStateOf(startIndex.coerceIn(0, items.size - 1)) }
+
+    // Immersive: hide the system bars while the full-screen viewer is open; restore on exit.
+    val view = LocalView.current
+    DisposableEffect(Unit) {
+        val window = (view.context as? Activity)?.window
+        val controller = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
         Box(Modifier.fillMaxSize()) {
-            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                MediaPage(items[page], materialize, onTap = { chromeVisible = !chromeVisible })
-            }
-            if (chromeVisible) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp)
-                ) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
-                }
-                Text(
-                    items[pagerState.currentPage].name,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
-                )
-            }
+            MediaPage(
+                items[index],
+                materialize,
+                onPrev = { if (index > 0) index-- },
+                onNext = { if (index < items.size - 1) index++ }
+            )
         }
     }
 }
 
 @Composable
-private fun MediaPage(item: MediaItem, materialize: suspend (MediaItem) -> File, onTap: () -> Unit) {
+private fun MediaPage(
+    item: MediaItem,
+    materialize: suspend (MediaItem) -> File,
+    onPrev: () -> Unit,
+    onNext: () -> Unit
+) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
         value = item.deviceUri ?: runCatching { materialize(item) }.getOrNull()
     }
@@ -568,7 +573,7 @@ private fun MediaPage(item: MediaItem, materialize: suspend (MediaItem) -> File,
         when {
             model == null -> CircularProgressIndicator(color = Color.White)
             item.isVideo -> VideoPlayer(model!!)
-            else -> ZoomableImage(model, onTap = onTap)
+            else -> ZoomableImage(model, onPrev = onPrev, onNext = onNext)
         }
     }
 }
@@ -596,40 +601,45 @@ private fun VideoPlayer(model: Any) {
 }
 
 @Composable
-private fun ZoomableImage(model: Any?, onTap: () -> Unit = {}) {
-    var scale by remember { mutableStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+private fun ZoomableImage(model: Any?, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
+    var scale by remember(model) { mutableStateOf(1f) }
+    var offset by remember(model) { mutableStateOf(Offset.Zero) }
     AsyncImage(
         model = model,
         contentDescription = null,
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
-            // Single tap toggles controls; double-tap toggles between fit and 2.5× zoom.
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { onTap() },
-                    onDoubleTap = {
-                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                    }
-                )
+            // Double-tap toggles between fit and 2.5× zoom.
+            .pointerInput(model) {
+                detectTapGestures(onDoubleTap = {
+                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                })
             }
-            // Only capture drags when pinching (2+ fingers) or already zoomed; otherwise let the
-            // pager receive the horizontal swipe so single-finger swipe moves to the next item.
-            .pointerInput(Unit) {
+            // Pinch/pan when zoomed; otherwise a horizontal swipe jumps to the next item instantly.
+            .pointerInput(model) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var dx = 0f
+                    var dy = 0f
+                    var zoomed = false
                     do {
                         val event = awaitPointerEvent()
                         val multiTouch = event.changes.count { it.pressed } > 1
                         if (multiTouch || scale > 1f) {
-                            val zoom = event.calculateZoom()
-                            val pan = event.calculatePan()
-                            scale = (scale * zoom).coerceIn(1f, 6f)
-                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                            zoomed = true
+                            scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                            offset = if (scale > 1f) offset + event.calculatePan() else Offset.Zero
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else {
+                            val pan = event.calculatePan()
+                            dx += pan.x; dy += pan.y
                         }
                     } while (event.changes.any { it.pressed })
+                    if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {
+                        val threshold = size.width * 0.15f
+                        if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
+                    }
                 }
             }
             .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)

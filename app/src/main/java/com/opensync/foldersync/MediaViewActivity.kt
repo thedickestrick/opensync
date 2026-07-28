@@ -1,6 +1,5 @@
 package com.opensync.foldersync
 
-import android.app.Activity
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -12,26 +11,13 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -40,8 +26,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -51,6 +35,7 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import java.io.File
+import kotlin.math.abs
 
 private data class MediaEntry(val uri: Uri, val isVideo: Boolean)
 
@@ -59,13 +44,14 @@ private val VIDEO_EXTS = listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".3gp",
 
 /**
  * Standalone full-screen viewer for images/videos handed to us via ACTION_VIEW, so OpenSync can be
- * a default picture/video player. For file:// opens it enumerates the folder so you can swipe
- * between siblings; content:// opens (no reliable siblings) show just the one item.
+ * a default picture/video player. Nothing but the picture is shown (no bars, no controls). For
+ * file:// opens the folder is enumerated so a horizontal swipe jumps straight to the next item.
  */
 class MediaViewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        hideSystemBars()
 
         val data: Uri? = intent?.data
         if (data == null) { finish(); return }
@@ -73,11 +59,20 @@ class MediaViewActivity : ComponentActivity() {
         val (items, startIndex) = buildPlaylist(data)
         setContent {
             OpenSyncTheme {
-                Surface(Modifier.fillMaxSize(), color = Color.Black) {
-                    MediaPager(items, startIndex) { finish() }
-                }
+                MediaSwiper(items, startIndex)
             }
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
+    private fun hideSystemBars() {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 
     private fun buildPlaylist(data: Uri): Pair<List<MediaEntry>, Int> {
@@ -96,7 +91,6 @@ class MediaViewActivity : ComponentActivity() {
                 }
             }
         }
-        // content:// or anything else — a single item, type from the intent / resolver / extension.
         val mime = intent?.type ?: runCatching { contentResolver.getType(data) }.getOrNull()
         val video = if (mime != null) mime.startsWith("video/") else isVideo(data.toString())
         return listOf(MediaEntry(data, video)) to 0
@@ -107,43 +101,25 @@ private fun isImage(name: String) = name.lowercase().let { n -> IMAGE_EXTS.any {
 private fun isVideo(name: String) = name.lowercase().let { n -> VIDEO_EXTS.any { n.endsWith(it) } }
 
 @Composable
-private fun MediaPager(items: List<MediaEntry>, startIndex: Int, onClose: () -> Unit) {
-    val pagerState = rememberPagerState(initialPage = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) {
-        items.size
-    }
-    // Controls hidden by default for a clean full-screen picture; tap toggles them.
-    var chromeVisible by remember { mutableStateOf(false) }
-
-    val view = LocalView.current
-    LaunchedEffect(chromeVisible) {
-        val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
-        val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (chromeVisible) controller.show(WindowInsetsCompat.Type.systemBars())
-        else controller.hide(WindowInsetsCompat.Type.systemBars())
-    }
-
+private fun MediaSwiper(items: List<MediaEntry>, startIndex: Int) {
+    var index by remember { mutableStateOf(startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) }
     Box(Modifier.fillMaxSize()) {
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-            val item = items[page]
-            if (item.isVideo) VideoPage(item.uri, active = pagerState.currentPage == page)
-            else ImagePage(item.uri, onTap = { chromeVisible = !chromeVisible })
-        }
-        if (chromeVisible) {
-            CloseButton(onClose)
-            if (items.size > 1) {
-                Text(
-                    "${pagerState.currentPage + 1} / ${items.size}",
-                    color = Color.White,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp)
-                )
-            }
+        val item = items.getOrNull(index) ?: return@Box
+        if (item.isVideo) {
+            VideoPage(item.uri)
+        } else {
+            SwipeImage(
+                uri = item.uri,
+                onPrev = { if (index > 0) index-- },
+                onNext = { if (index < items.size - 1) index++ }
+            )
         }
     }
 }
 
+/** Full-screen image with pinch/double-tap zoom; a horizontal swipe switches item instantly (no animation). */
 @Composable
-private fun ImagePage(uri: Uri, onTap: () -> Unit) {
+private fun SwipeImage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
     var scale by remember(uri) { mutableStateOf(1f) }
     var offset by remember(uri) { mutableStateOf(Offset.Zero) }
     AsyncImage(
@@ -153,26 +129,33 @@ private fun ImagePage(uri: Uri, onTap: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(uri) {
-                detectTapGestures(
-                    onTap = { onTap() },
-                    onDoubleTap = {
-                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                    }
-                )
+                detectTapGestures(onDoubleTap = {
+                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                })
             }
-            // Only capture drags when pinching or zoomed, so single-finger swipes reach the pager.
             .pointerInput(uri) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var dx = 0f
+                    var dy = 0f
+                    var zoomed = false
                     do {
                         val event = awaitPointerEvent()
                         val multiTouch = event.changes.count { it.pressed } > 1
                         if (multiTouch || scale > 1f) {
+                            zoomed = true
                             scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
                             offset = if (scale > 1f) offset + event.calculatePan() else Offset.Zero
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else {
+                            val pan = event.calculatePan()
+                            dx += pan.x; dy += pan.y
                         }
                     } while (event.changes.any { it.pressed })
+                    if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {
+                        val threshold = size.width * 0.15f
+                        if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
+                    }
                 }
             }
             .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
@@ -180,29 +163,18 @@ private fun ImagePage(uri: Uri, onTap: () -> Unit) {
 }
 
 @Composable
-private fun VideoPage(uri: Uri, active: Boolean) {
+private fun VideoPage(uri: Uri) {
     val context = LocalContext.current
     val exo = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
             prepare()
+            playWhenReady = true
         }
     }
-    // Only the current page plays; swiping away pauses it.
-    LaunchedEffect(active) { exo.playWhenReady = active }
     DisposableEffect(uri) { onDispose { exo.release() } }
     AndroidView(
         factory = { ctx -> PlayerView(ctx).apply { player = exo } },
         modifier = Modifier.fillMaxSize()
     )
-}
-
-@Composable
-private fun BoxScope.CloseButton(onClose: () -> Unit) {
-    IconButton(
-        onClick = onClose,
-        modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp)
-    ) {
-        Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
-    }
 }
