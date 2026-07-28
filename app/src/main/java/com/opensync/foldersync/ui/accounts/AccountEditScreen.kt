@@ -117,7 +117,12 @@ class AccountEditViewModel : ViewModel() {
 
     fun save(onDone: () -> Unit) = viewModelScope.launch {
         val acc = _account.value.copy(passwordEnc = CryptoManager.encrypt(_password.value))
-        if (acc.id == 0L) db.accountDao().insert(acc) else db.accountDao().update(acc)
+        if (acc.id == 0L) {
+            val id = db.accountDao().insert(acc)
+            com.opensync.foldersync.ui.AccountPickResult.lastCreatedId.value = id
+        } else {
+            db.accountDao().update(acc)
+        }
         onDone()
     }
 

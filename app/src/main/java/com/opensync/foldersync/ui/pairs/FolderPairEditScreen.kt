@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -40,6 +41,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +61,7 @@ import com.opensync.foldersync.data.SyncDirection
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.ExplorerRepository
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.ui.AccountPickResult
 import com.opensync.foldersync.ui.components.DropdownField
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -110,6 +113,7 @@ class FolderPairEditViewModel : ViewModel() {
 fun FolderPairEditScreen(
     pairId: Long,
     onBack: () -> Unit,
+    onAddAccount: () -> Unit = {},
     vm: FolderPairEditViewModel = viewModel()
 ) {
     LaunchedEffect(pairId) { vm.load(pairId) }
@@ -121,6 +125,18 @@ fun FolderPairEditScreen(
     var showLocalPicker by remember { mutableStateOf(false) }
     var showRemotePicker by remember { mutableStateOf(false) }
     var showAccountPicker by remember { mutableStateOf(false) }
+    // rememberSaveable: the flag must survive while we're away on the account editor.
+    var awaitingNewAccount by rememberSaveable { mutableStateOf(false) }
+
+    // Auto-select an account created via "Add account" when we come back to this screen.
+    val newAccountId by AccountPickResult.lastCreatedId.collectAsState()
+    LaunchedEffect(newAccountId) {
+        if (awaitingNewAccount && newAccountId != null) {
+            vm.update { it.copy(remoteAccountId = newAccountId) }
+            AccountPickResult.lastCreatedId.value = null
+            awaitingNewAccount = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -177,6 +193,14 @@ fun FolderPairEditScreen(
                 optionLabel = { acc -> acc?.let { "${it.name} (${it.type.label})" } ?: "Local device folder" },
                 onSelected = { acc -> vm.update { it.copy(remoteAccountId = acc?.id) } }
             )
+            TextButton(onClick = {
+                AccountPickResult.lastCreatedId.value = null
+                awaitingNewAccount = true
+                onAddAccount()
+            }) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Text("  Add cloud / remote account")
+            }
 
             val remoteTrailing: (@Composable () -> Unit)? =
                 if (pair.remoteAccountId == null) {
