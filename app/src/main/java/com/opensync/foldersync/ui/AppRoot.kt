@@ -23,6 +23,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -66,6 +67,7 @@ fun AppRoot() {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
+    val fullscreen by FullscreenState.active.collectAsState()
     val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
     val navigateTo: (String) -> Unit = { route ->
         scope.launch { drawerState.close() }
@@ -80,6 +82,7 @@ fun AppRoot() {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = drawerState.isOpen || !fullscreen,
         drawerContent = {
             DrawerContent(currentRoute = currentRoute, onNavigate = navigateTo)
         }
