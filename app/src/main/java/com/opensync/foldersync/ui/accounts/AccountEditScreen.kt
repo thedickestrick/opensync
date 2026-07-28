@@ -47,6 +47,7 @@ import com.opensync.foldersync.crypto.CryptoManager
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.data.AccountType
 import com.opensync.foldersync.provider.DropboxAuth
+import com.opensync.foldersync.provider.GoogleDriveAuth
 import com.opensync.foldersync.provider.OneDriveAuth
 import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.ui.components.DropdownField
@@ -153,6 +154,10 @@ fun AccountEditScreen(
     LaunchedEffect(odToken) {
         if (type == AccountType.ONEDRIVE) odToken?.let { vm.setPassword(it); OneDriveAuth.refreshToken.value = null }
     }
+    val gdToken by GoogleDriveAuth.refreshToken.collectAsState()
+    LaunchedEffect(gdToken) {
+        if (type == AccountType.GOOGLE_DRIVE) gdToken?.let { vm.setPassword(it); GoogleDriveAuth.refreshToken.value = null }
+    }
 
     Scaffold(
         topBar = {
@@ -215,6 +220,15 @@ fun AccountEditScreen(
                         else OneDriveAuth.begin(account.username.trim())
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                     }
+                )
+            } else if (type == AccountType.GOOGLE_DRIVE) {
+                GoogleDriveSection(
+                    clientId = account.username,
+                    clientSecret = account.host,
+                    connected = password.isNotBlank(),
+                    onClientId = { v -> vm.update { it.copy(username = v) } },
+                    onClientSecret = { v -> vm.update { it.copy(host = v) } },
+                    onConnect = { GoogleDriveAuth.startLogin(context, account.username.trim(), account.host.trim()) }
                 )
             } else if (isRemote) {
                 OutlinedTextField(
@@ -288,6 +302,7 @@ fun AccountEditScreen(
                             AccountType.S3 -> "Bucket name"
                             AccountType.DROPBOX -> "Base folder in Dropbox (blank = app root)"
                             AccountType.ONEDRIVE -> "Base folder in OneDrive (blank = root)"
+                            AccountType.GOOGLE_DRIVE -> "Base folder in Drive (blank = My Drive root)"
                             else -> "Base path on server"
                         }
                     )
@@ -374,6 +389,48 @@ private fun OAuthSection(
         enabled = appKey.isNotBlank(),
         modifier = Modifier.fillMaxWidth()
     ) { Text(if (connected) "Reconnect $providerName" else "Connect $providerName") }
+    Text(
+        if (connected) "✓ Connected" else "Not connected",
+        color = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodyMedium
+    )
+}
+
+@Composable
+private fun GoogleDriveSection(
+    clientId: String,
+    clientSecret: String,
+    connected: Boolean,
+    onClientId: (String) -> Unit,
+    onClientSecret: (String) -> Unit,
+    onConnect: () -> Unit
+) {
+    Text(
+        "In Google Cloud Console: enable the Google Drive API, create an OAuth client of type " +
+            "\"Desktop app\", and add yourself as a test user. Paste the Client ID and Client secret, " +
+            "then connect (a browser opens and returns automatically).",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    OutlinedTextField(
+        value = clientId,
+        onValueChange = onClientId,
+        label = { Text("Client ID") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = clientSecret,
+        onValueChange = onClientSecret,
+        label = { Text("Client secret") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Button(
+        onClick = onConnect,
+        enabled = clientId.isNotBlank() && clientSecret.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text(if (connected) "Reconnect Google Drive" else "Connect Google Drive") }
     Text(
         if (connected) "✓ Connected" else "Not connected",
         color = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
