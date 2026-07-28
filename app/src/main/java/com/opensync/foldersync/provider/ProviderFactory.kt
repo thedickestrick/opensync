@@ -55,6 +55,18 @@ object ProviderFactory {
                 val baseUrl = PathUtil.joinUrl(PathUtil.joinUrl(hostUrl, account.basePath), subPath)
                 WebDavProvider(baseUrl, account.username, password, account.allowSelfSigned)
             }
+
+            AccountType.S3 ->
+                S3Provider(
+                    endpoint = account.host,
+                    region = account.domain.ifBlank { "us-east-1" },
+                    accessKey = account.username,
+                    secretKey = password,
+                    bucket = account.basePath.trim('/'),
+                    prefix = subPath,
+                    useTls = account.useTls,
+                    allowSelfSigned = account.allowSelfSigned
+                )
         }
     }
 
