@@ -68,7 +68,7 @@ object GoogleDriveAuth {
 
         Thread {
             try {
-                server.soTimeout = 300_000
+                server.soTimeout = 180_000
                 server.accept().use { socket ->
                     val params = readRequest(socket)
                     writeResponse(socket)
@@ -82,6 +82,9 @@ object GoogleDriveAuth {
                         else -> error.value = params["error"] ?: "Google sign-in cancelled"
                     }
                 }
+            } catch (e: java.net.SocketTimeoutException) {
+                error.value = "Timed out waiting for Google. If the browser showed \"Error 400: " +
+                    "redirect_uri_mismatch\", your OAuth client must be of type \"Desktop app\"."
             } catch (e: Exception) {
                 error.value = e.message ?: "Google sign-in error"
             } finally {
@@ -106,7 +109,11 @@ object GoogleDriveAuth {
         client.newCall(Request.Builder().url(TOKEN).post(form).build()).execute().use { resp ->
             val body = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
-                error.value = "Token exchange failed (${resp.code})"
+                val detail = runCatching {
+                    val j = JSONObject(body)
+                    j.optString("error_description").ifBlank { j.optString("error") }
+                }.getOrNull().orEmpty()
+                error.value = "Google sign-in failed (${resp.code})" + if (detail.isNotBlank()) ": $detail" else ""
                 return null
             }
             return JSONObject(body).optString("refresh_token").ifBlank { null }

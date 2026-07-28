@@ -175,6 +175,13 @@ fun AccountEditScreen(
             vm.setPassword(it); vm.ensureName("Google Drive"); GoogleDriveAuth.refreshToken.value = null
         }
     }
+    // Surface OAuth sign-in errors so failures aren't silent.
+    val dbxErr by DropboxAuth.error.collectAsState()
+    LaunchedEffect(dbxErr) { dbxErr?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show(); DropboxAuth.error.value = null } }
+    val odErr by OneDriveAuth.error.collectAsState()
+    LaunchedEffect(odErr) { odErr?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show(); OneDriveAuth.error.value = null } }
+    val gdErr by GoogleDriveAuth.error.collectAsState()
+    LaunchedEffect(gdErr) { gdErr?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show(); GoogleDriveAuth.error.value = null } }
 
     Scaffold(
         topBar = {
@@ -439,9 +446,10 @@ private fun GoogleDriveSection(
     onConnect: () -> Unit
 ) {
     Text(
-        "In Google Cloud Console: enable the Google Drive API, create an OAuth client of type " +
-            "\"Desktop app\", and add yourself as a test user. Paste the Client ID and Client secret, " +
-            "then connect (a browser opens and returns automatically).",
+        "In Google Cloud Console: enable the Google Drive API; on the OAuth consent screen add " +
+            "yourself as a Test user; then Credentials → Create OAuth client ID → Application type " +
+            "MUST be \"Desktop app\" (a Web app gives a 400 redirect_uri_mismatch — Desktop apps allow " +
+            "the local sign-in redirect). Paste the Client ID and Client secret, then connect.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
