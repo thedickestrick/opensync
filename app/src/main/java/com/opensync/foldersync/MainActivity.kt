@@ -12,9 +12,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.lifecycleScope
 import com.opensync.foldersync.files.ShareInbox
 import com.opensync.foldersync.files.ShareRequest
 import com.opensync.foldersync.files.SharedItem
+import com.opensync.foldersync.provider.DropboxAuth
+import kotlinx.coroutines.launch
 import com.opensync.foldersync.ui.AppRoot
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import java.io.File
@@ -52,9 +55,16 @@ class MainActivity : ComponentActivity() {
             }
             Intent.ACTION_VIEW -> {
                 val data = intent.data
-                if (data?.scheme == "file") {
-                    val f = File(data.path.orEmpty())
-                    if (f.isDirectory) ShareInbox.post(ShareRequest.Open(f.absolutePath))
+                when {
+                    data?.scheme == "opensync" && data.host == "dropbox" -> {
+                        val code = data.getQueryParameter("code")
+                        if (code != null) lifecycleScope.launch { DropboxAuth.complete(code) }
+                        else DropboxAuth.fail(data.getQueryParameter("error_description") ?: "Dropbox sign-in cancelled")
+                    }
+                    data?.scheme == "file" -> {
+                        val f = File(data.path.orEmpty())
+                        if (f.isDirectory) ShareInbox.post(ShareRequest.Open(f.absolutePath))
+                    }
                 }
             }
         }
