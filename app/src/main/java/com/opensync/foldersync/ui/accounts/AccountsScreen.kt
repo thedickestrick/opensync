@@ -89,6 +89,18 @@ fun AccountsScreen(
     }
 }
 
+/** A non-sensitive one-line summary for the accounts list (never shows secrets/keys). */
+private fun accountSubtitle(account: Account): String = when (account.type) {
+    AccountType.LOCAL -> account.basePath.ifBlank { "/" }
+    // host holds the client secret for Google Drive — never show it here.
+    AccountType.GOOGLE_DRIVE -> "Drive · ${account.basePath.ifBlank { "My Drive" }}"
+    AccountType.DROPBOX -> "Dropbox · ${account.basePath.ifBlank { "app folder" }}"
+    AccountType.ONEDRIVE -> "OneDrive · ${account.basePath.ifBlank { "root" }}"
+    // username is the access key ID (not the secret); show the endpoint + bucket instead.
+    AccountType.S3 -> "${account.host.ifBlank { "?" }} · ${account.basePath.ifBlank { "bucket" }}"
+    else -> "${account.username.ifBlank { "—" }}@${account.host.ifBlank { "?" }}"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AccountCard(account: Account, onClick: () -> Unit) {
@@ -97,16 +109,11 @@ private fun AccountCard(account: Account, onClick: () -> Unit) {
             Text(account.name.ifBlank { "(unnamed)" }, style = MaterialTheme.typography.titleMedium)
             Text(account.type.label, style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary)
-            if (account.type != AccountType.LOCAL) {
-                Text(
-                    "${account.username.ifBlank { "—" }}@${account.host.ifBlank { "?" }}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Text(account.basePath, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text(
+                accountSubtitle(account),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
