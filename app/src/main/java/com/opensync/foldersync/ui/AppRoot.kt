@@ -223,7 +223,8 @@ fun AppRoot() {
             ) { entry ->
                 FolderPairEditScreen(
                     pairId = entry.arguments?.getLong("id") ?: 0L,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onAddAccount = { navController.navigate("account/0") }
                 )
             }
             composable(
