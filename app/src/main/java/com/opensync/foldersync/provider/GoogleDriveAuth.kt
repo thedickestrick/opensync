@@ -82,6 +82,11 @@ object GoogleDriveAuth {
                         else -> error.value = params["error"] ?: "Google sign-in cancelled"
                     }
                 }
+            } catch (e: java.net.UnknownHostException) {
+                error.value = "Can't reach Google (couldn't resolve ${e.message ?: "googleapis.com"}). " +
+                    "Your internet, a VPN, or a Private DNS / ad-blocking resolver is likely blocking " +
+                    "googleapis.com. Turn Private DNS to Automatic (Settings → Connections → Private DNS) " +
+                    "and disable any VPN, then try again."
             } catch (e: java.net.SocketTimeoutException) {
                 error.value = "Timed out waiting for Google. If the browser showed \"Error 400: " +
                     "redirect_uri_mismatch\", your OAuth client must be of type \"Desktop app\"."
