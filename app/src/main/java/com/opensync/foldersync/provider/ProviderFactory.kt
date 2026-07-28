@@ -81,6 +81,14 @@ object ProviderFactory {
                     refreshToken = password,
                     basePath = PathUtil.join(account.basePath, subPath)
                 )
+
+            AccountType.GOOGLE_DRIVE ->
+                GoogleDriveProvider(
+                    clientId = account.username,
+                    clientSecret = account.host,
+                    refreshToken = password,
+                    basePath = PathUtil.join(account.basePath, subPath)
+                )
         }
     }
 

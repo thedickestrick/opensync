@@ -18,7 +18,8 @@ enum class AccountType(val label: String) {
     SMB("SMB / Windows share"),
     S3("S3 cloud (AWS / B2 / Wasabi / R2 …)"),
     DROPBOX("Dropbox"),
-    ONEDRIVE("OneDrive")
+    ONEDRIVE("OneDrive"),
+    GOOGLE_DRIVE("Google Drive")
 }
 
 /**
@@ -49,6 +50,7 @@ data class Account(
         AccountType.S3 -> if (useTls) 443 else 80
         AccountType.DROPBOX -> 443
         AccountType.ONEDRIVE -> 443
+        AccountType.GOOGLE_DRIVE -> 443
         AccountType.LOCAL -> 0
     }
 }
