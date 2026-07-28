@@ -74,6 +74,13 @@ object ProviderFactory {
                     refreshToken = password,
                     basePath = PathUtil.join(account.basePath, subPath)
                 )
+
+            AccountType.ONEDRIVE ->
+                OneDriveProvider(
+                    clientId = account.username,
+                    refreshToken = password,
+                    basePath = PathUtil.join(account.basePath, subPath)
+                )
         }
     }
 

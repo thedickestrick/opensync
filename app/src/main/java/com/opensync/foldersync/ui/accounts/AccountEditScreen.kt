@@ -47,6 +47,7 @@ import com.opensync.foldersync.crypto.CryptoManager
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.data.AccountType
 import com.opensync.foldersync.provider.DropboxAuth
+import com.opensync.foldersync.provider.OneDriveAuth
 import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.ui.components.DropdownField
 import kotlinx.coroutines.Dispatchers
@@ -143,10 +144,14 @@ fun AccountEditScreen(
     val type = account.type
     val isRemote = type != AccountType.LOCAL
 
-    // Pick up the Dropbox refresh token once the OAuth redirect completes.
+    // Pick up the refresh token once the OAuth redirect completes.
     val dbxToken by DropboxAuth.refreshToken.collectAsState()
     LaunchedEffect(dbxToken) {
-        dbxToken?.let { vm.setPassword(it); DropboxAuth.refreshToken.value = null }
+        if (type == AccountType.DROPBOX) dbxToken?.let { vm.setPassword(it); DropboxAuth.refreshToken.value = null }
+    }
+    val odToken by OneDriveAuth.refreshToken.collectAsState()
+    LaunchedEffect(odToken) {
+        if (type == AccountType.ONEDRIVE) odToken?.let { vm.setPassword(it); OneDriveAuth.refreshToken.value = null }
     }
 
     Scaffold(
@@ -190,13 +195,24 @@ fun AccountEditScreen(
                 onSelected = { t -> vm.update { acc -> acc.copy(type = t, useTls = if (t == AccountType.S3) true else acc.useTls) } }
             )
 
-            if (type == AccountType.DROPBOX) {
-                DropboxSection(
+            if (type == AccountType.DROPBOX || type == AccountType.ONEDRIVE) {
+                val isDropbox = type == AccountType.DROPBOX
+                OAuthSection(
+                    instructions = if (isDropbox)
+                        "Create an app at dropbox.com/developers (Scoped access → App folder), add redirect " +
+                            "URI \"${DropboxAuth.REDIRECT}\", enable files.content read/write, then paste the App key."
+                    else
+                        "Register an app in the Azure portal (App registrations → any org + personal accounts), " +
+                            "add a Mobile/desktop redirect URI \"${OneDriveAuth.REDIRECT}\" and the Files.ReadWrite " +
+                            "delegated permission, then paste the Application (client) ID.",
+                    keyLabel = if (isDropbox) "Dropbox app key" else "Application (client) ID",
+                    providerName = if (isDropbox) "Dropbox" else "OneDrive",
                     appKey = account.username,
                     connected = password.isNotBlank(),
                     onAppKey = { v -> vm.update { it.copy(username = v) } },
                     onConnect = {
-                        val url = DropboxAuth.begin(account.username.trim())
+                        val url = if (isDropbox) DropboxAuth.begin(account.username.trim())
+                        else OneDriveAuth.begin(account.username.trim())
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                     }
                 )
@@ -271,6 +287,7 @@ fun AccountEditScreen(
                             AccountType.SMB -> "Path: blank or / lists all shares, or /Share/Folder"
                             AccountType.S3 -> "Bucket name"
                             AccountType.DROPBOX -> "Base folder in Dropbox (blank = app root)"
+                            AccountType.ONEDRIVE -> "Base folder in OneDrive (blank = root)"
                             else -> "Base path on server"
                         }
                     )
@@ -331,23 +348,24 @@ fun AccountEditScreen(
 }
 
 @Composable
-private fun DropboxSection(
+private fun OAuthSection(
+    instructions: String,
+    keyLabel: String,
+    providerName: String,
     appKey: String,
     connected: Boolean,
     onAppKey: (String) -> Unit,
     onConnect: () -> Unit
 ) {
     Text(
-        "Create an app at dropbox.com/developers (Scoped access → App folder), add the redirect " +
-            "URI \"${DropboxAuth.REDIRECT}\", enable the files.content read/write permissions, then paste " +
-            "the App key below and connect.",
+        instructions,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
     OutlinedTextField(
         value = appKey,
         onValueChange = onAppKey,
-        label = { Text("Dropbox app key") },
+        label = { Text(keyLabel) },
         singleLine = true,
         modifier = Modifier.fillMaxWidth()
     )
@@ -355,7 +373,7 @@ private fun DropboxSection(
         onClick = onConnect,
         enabled = appKey.isNotBlank(),
         modifier = Modifier.fillMaxWidth()
-    ) { Text(if (connected) "Reconnect Dropbox" else "Connect Dropbox") }
+    ) { Text(if (connected) "Reconnect $providerName" else "Connect $providerName") }
     Text(
         if (connected) "✓ Connected" else "Not connected",
         color = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
