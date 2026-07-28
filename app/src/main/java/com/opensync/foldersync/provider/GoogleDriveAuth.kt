@@ -111,18 +111,28 @@ object GoogleDriveAuth {
             .add("grant_type", "authorization_code")
             .add("code_verifier", verifier)
             .build()
-        client.newCall(Request.Builder().url(TOKEN).post(form).build()).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                val detail = runCatching {
-                    val j = JSONObject(body)
-                    j.optString("error_description").ifBlank { j.optString("error") }
-                }.getOrNull().orEmpty()
-                error.value = "Google sign-in failed (${resp.code})" + if (detail.isNotBlank()) ": $detail" else ""
-                return null
+        // The auth code is only spent once we actually reach Google, so it's safe to retry a DNS blip.
+        var lastError: Exception? = null
+        repeat(3) {
+            try {
+                client.newCall(Request.Builder().url(TOKEN).post(form).build()).execute().use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    if (!resp.isSuccessful) {
+                        val detail = runCatching {
+                            val j = JSONObject(body)
+                            j.optString("error_description").ifBlank { j.optString("error") }
+                        }.getOrNull().orEmpty()
+                        error.value = "Google sign-in failed (${resp.code})" + if (detail.isNotBlank()) ": $detail" else ""
+                        return null
+                    }
+                    return JSONObject(body).optString("refresh_token").ifBlank { null }
+                }
+            } catch (e: java.net.UnknownHostException) {
+                lastError = e
+                runCatching { Thread.sleep(1200) }
             }
-            return JSONObject(body).optString("refresh_token").ifBlank { null }
         }
+        throw lastError ?: java.io.IOException("Google token exchange failed")
     }
 
     private fun readRequest(socket: Socket): Map<String, String> {
