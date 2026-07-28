@@ -1,8 +1,13 @@
 package com.opensync.foldersync.ui.settings
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -168,6 +173,11 @@ fun SettingsScreen(
         if (UpdateChecker.canInstall(context)) vm.downloadAndInstall(context)
     }
 
+    var batteryUnrestricted by remember { mutableStateOf(isIgnoringBattery(context)) }
+    val batteryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { batteryUnrestricted = isIgnoringBattery(context) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -209,6 +219,29 @@ fun SettingsScreen(
             OutlinedButton(onClick = { vm.rescheduleAll() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Re-apply background schedules")
             }
+
+            HorizontalDivider()
+            Text("Background reliability", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Scheduled backups run through Android's WorkManager, so they keep working when the app " +
+                    "is closed and after a reboot. On some phones battery optimization can still pause them — " +
+                    "allow unrestricted background use for reliable syncing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            SettingRow(
+                title = "Battery optimization",
+                subtitle = if (batteryUnrestricted) "Unrestricted — backups can run anytime"
+                else "Optimized — background syncs may be delayed or skipped",
+                actionLabel = if (batteryUnrestricted) null else "Allow",
+                onAction = { runCatching { batteryLauncher.launch(ignoreBatteryIntent(context)) } }
+            )
+            Text(
+                "Samsung: also go to Settings → Battery → Background usage limits, remove OpenSync from " +
+                    "\"Sleeping apps\"/\"Deep sleeping apps\", and turn off \"Put unused apps to sleep\".",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             HorizontalDivider()
             Text("App updates (GitHub)", style = MaterialTheme.typography.titleMedium)
@@ -310,3 +343,14 @@ private fun hasNotificationPermission(context: android.content.Context): Boolean
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
     } else true
+
+private fun isIgnoringBattery(context: Context): Boolean {
+    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+private fun ignoreBatteryIntent(context: Context): Intent =
+    Intent(
+        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        Uri.parse("package:${context.packageName}")
+    )

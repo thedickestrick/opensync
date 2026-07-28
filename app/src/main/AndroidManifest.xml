@@ -23,6 +23,9 @@
     <!-- Self-update: download and install a new APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Reliable background syncs: let the user exempt the app from battery optimization. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application
         android:name=".FolderSyncApp"
         android:allowBackup="true"
