@@ -230,7 +230,9 @@ fun AccountEditScreen(
                 OAuthSection(
                     instructions = if (isDropbox)
                         "Create an app at dropbox.com/developers (Scoped access → App folder), add redirect " +
-                            "URI \"${DropboxAuth.REDIRECT}\", enable files.content read/write, then paste the App key."
+                            "URI \"${DropboxAuth.REDIRECT}\", and under Permissions enable files.metadata.read, " +
+                            "files.content.read and files.content.write. Paste the App key, then Connect. " +
+                            "(If you change permissions later, reconnect — the token is scoped at sign-in.)"
                     else
                         "Register an app in the Azure portal (App registrations → any org + personal accounts), " +
                             "add a Mobile/desktop redirect URI \"${OneDriveAuth.REDIRECT}\" and the Files.ReadWrite " +
