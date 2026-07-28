@@ -95,6 +95,7 @@ import androidx.media3.ui.PlayerView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
+import com.opensync.foldersync.ui.FullscreenState
 import kotlin.math.abs
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.files.ExplorerLocation
@@ -537,14 +538,18 @@ private fun MediaViewer(
     BackHandler(enabled = true) { onClose() }
     var index by remember { mutableStateOf(startIndex.coerceIn(0, items.size - 1)) }
 
-    // Immersive: hide the system bars while the full-screen viewer is open; restore on exit.
+    // Immersive + suppress the nav-drawer edge swipe while the viewer is open.
     val view = LocalView.current
     DisposableEffect(Unit) {
+        FullscreenState.active.value = true
         val window = (view.context as? Activity)?.window
         val controller = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
         controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller?.hide(WindowInsetsCompat.Type.systemBars())
-        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+        onDispose {
+            FullscreenState.active.value = false
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
@@ -634,6 +639,8 @@ private fun ZoomableImage(model: Any?, onPrev: () -> Unit = {}, onNext: () -> Un
                         } else {
                             val pan = event.calculatePan()
                             dx += pan.x; dy += pan.y
+                            // Consume so the nav drawer / other ancestors don't treat this as their swipe.
+                            if (abs(dx) > abs(dy)) event.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
                     if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {

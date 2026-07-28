@@ -150,6 +150,7 @@ private fun SwipeImage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
                         } else {
                             val pan = event.calculatePan()
                             dx += pan.x; dy += pan.y
+                            if (abs(dx) > abs(dy)) event.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
                     if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {
