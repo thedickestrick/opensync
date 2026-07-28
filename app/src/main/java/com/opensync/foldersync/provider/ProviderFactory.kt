@@ -67,6 +67,13 @@ object ProviderFactory {
                     useTls = account.useTls,
                     allowSelfSigned = account.allowSelfSigned
                 )
+
+            AccountType.DROPBOX ->
+                DropboxProvider(
+                    appKey = account.username,
+                    refreshToken = password,
+                    basePath = PathUtil.join(account.basePath, subPath)
+                )
         }
     }
 

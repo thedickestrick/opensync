@@ -30,8 +30,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -43,6 +46,7 @@ import com.opensync.foldersync.Graph
 import com.opensync.foldersync.crypto.CryptoManager
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.data.AccountType
+import com.opensync.foldersync.provider.DropboxAuth
 import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.ui.components.DropdownField
 import kotlinx.coroutines.Dispatchers
@@ -134,9 +138,16 @@ fun AccountEditScreen(
     val password by vm.password.collectAsState()
     val testState by vm.test.collectAsState()
     var showPassword by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     val type = account.type
     val isRemote = type != AccountType.LOCAL
+
+    // Pick up the Dropbox refresh token once the OAuth redirect completes.
+    val dbxToken by DropboxAuth.refreshToken.collectAsState()
+    LaunchedEffect(dbxToken) {
+        dbxToken?.let { vm.setPassword(it); DropboxAuth.refreshToken.value = null }
+    }
 
     Scaffold(
         topBar = {
@@ -179,7 +190,17 @@ fun AccountEditScreen(
                 onSelected = { t -> vm.update { acc -> acc.copy(type = t, useTls = if (t == AccountType.S3) true else acc.useTls) } }
             )
 
-            if (isRemote) {
+            if (type == AccountType.DROPBOX) {
+                DropboxSection(
+                    appKey = account.username,
+                    connected = password.isNotBlank(),
+                    onAppKey = { v -> vm.update { it.copy(username = v) } },
+                    onConnect = {
+                        val url = DropboxAuth.begin(account.username.trim())
+                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    }
+                )
+            } else if (isRemote) {
                 OutlinedTextField(
                     value = account.host,
                     onValueChange = { v -> vm.update { it.copy(host = v) } },
@@ -249,6 +270,7 @@ fun AccountEditScreen(
                             AccountType.LOCAL -> "Base folder (absolute path)"
                             AccountType.SMB -> "Path: blank or / lists all shares, or /Share/Folder"
                             AccountType.S3 -> "Bucket name"
+                            AccountType.DROPBOX -> "Base folder in Dropbox (blank = app root)"
                             else -> "Base path on server"
                         }
                     )
@@ -306,6 +328,39 @@ fun AccountEditScreen(
             }
         }
     }
+}
+
+@Composable
+private fun DropboxSection(
+    appKey: String,
+    connected: Boolean,
+    onAppKey: (String) -> Unit,
+    onConnect: () -> Unit
+) {
+    Text(
+        "Create an app at dropbox.com/developers (Scoped access → App folder), add the redirect " +
+            "URI \"${DropboxAuth.REDIRECT}\", enable the files.content read/write permissions, then paste " +
+            "the App key below and connect.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    OutlinedTextField(
+        value = appKey,
+        onValueChange = onAppKey,
+        label = { Text("Dropbox app key") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Button(
+        onClick = onConnect,
+        enabled = appKey.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text(if (connected) "Reconnect Dropbox" else "Connect Dropbox") }
+    Text(
+        if (connected) "✓ Connected" else "Not connected",
+        color = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodyMedium
+    )
 }
 
 @Composable

@@ -16,7 +16,8 @@ enum class AccountType(val label: String) {
     SFTP("SFTP (SSH)"),
     WEBDAV("WebDAV"),
     SMB("SMB / Windows share"),
-    S3("S3 cloud (AWS / B2 / Wasabi / R2 …)")
+    S3("S3 cloud (AWS / B2 / Wasabi / R2 …)"),
+    DROPBOX("Dropbox")
 }
 
 /**
@@ -45,6 +46,7 @@ data class Account(
         AccountType.WEBDAV -> if (useTls) 443 else 80
         AccountType.SMB -> 445
         AccountType.S3 -> if (useTls) 443 else 80
+        AccountType.DROPBOX -> 443
         AccountType.LOCAL -> 0
     }
 }
