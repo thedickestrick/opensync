@@ -63,6 +63,26 @@
             </intent-filter>
         </activity>
 
+        <!-- Full-screen picture / video viewer: lets OpenSync be a default media player. -->
+        <activity
+            android:name=".MediaViewActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.OpenSync"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout">
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
