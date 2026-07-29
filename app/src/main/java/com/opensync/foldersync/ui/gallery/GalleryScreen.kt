@@ -76,6 +76,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -555,6 +556,20 @@ private fun MediaViewer(
 
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
         Box(Modifier.fillMaxSize()) {
+            // Preload neighbouring device photos at display size (drawn invisibly under the current
+            // image) so the first swipe is instant instead of a blank flash.
+            for (i in intArrayOf(index - 1, index + 1)) {
+                val nb = items.getOrNull(i)
+                val uri = nb?.deviceUri
+                if (uri != null && !nb.isVideo) {
+                    AsyncImage(
+                        model = uri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().alpha(0f)
+                    )
+                }
+            }
             MediaPage(
                 items[index],
                 materialize,
