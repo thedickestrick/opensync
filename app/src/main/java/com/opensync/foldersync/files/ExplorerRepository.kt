@@ -103,8 +103,11 @@ class ExplorerRepository(private val context: Context) {
             }
             return@withContext
         }
-        val source = buildProvider(clip.location)
-        source.connect()
+        // When the copy source is the location we're already browsing, reuse that one connection.
+        // Only a separate cross-location source gets its own connection (and is closed afterwards);
+        // the browsing connection (e.g. an SMB share) is never opened/closed by a paste.
+        val sameLocation = clip.location == location
+        val source = if (sameLocation) dest else buildProvider(clip.location).also { it.connect() }
         try {
             for (item in clip.items) {
                 if (isCancelled()) break
@@ -116,7 +119,7 @@ class ExplorerRepository(private val context: Context) {
                 if (clip.move) FileOps.deleteTree(source, item.relPath, item.isDirectory)
             }
         } finally {
-            runCatching { source.close() }
+            if (!sameLocation) runCatching { source.close() }
         }
         }
     }

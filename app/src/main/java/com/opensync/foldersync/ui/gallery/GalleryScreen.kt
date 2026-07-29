@@ -97,6 +97,7 @@ import androidx.media3.ui.PlayerView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.opensync.foldersync.ui.FullscreenState
 import kotlin.math.abs
 import com.opensync.foldersync.data.Account
@@ -654,8 +655,9 @@ private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () ->
 private fun ZoomableImage(model: Any?, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
     var scale by remember(model) { mutableStateOf(1f) }
     var offset by remember(model) { mutableStateOf(Offset.Zero) }
+    val context = LocalContext.current
     AsyncImage(
-        model = model,
+        model = remember(model) { ImageRequest.Builder(context).data(model).crossfade(false).build() },
         contentDescription = null,
         contentScale = ContentScale.Fit,
         modifier = Modifier
