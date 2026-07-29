@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -105,6 +106,19 @@ private fun isVideo(name: String) = name.lowercase().let { n -> VIDEO_EXTS.any {
 private fun MediaSwiper(items: List<MediaEntry>, startIndex: Int) {
     var index by remember { mutableStateOf(startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) }
     Box(Modifier.fillMaxSize()) {
+        // Preload the neighbours at display size (drawn invisibly under the current image) so the
+        // first swipe shows the next picture instantly instead of a blank flash.
+        for (i in intArrayOf(index - 1, index + 1)) {
+            val nb = items.getOrNull(i)
+            if (nb != null && !nb.isVideo) {
+                AsyncImage(
+                    model = nb.uri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().alpha(0f)
+                )
+            }
+        }
         val item = items.getOrNull(index) ?: return@Box
         val onPrev = { if (index > 0) index-- }
         val onNext = { if (index < items.size - 1) index++ }
