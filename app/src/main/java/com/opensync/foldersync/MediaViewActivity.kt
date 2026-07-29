@@ -35,6 +35,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import java.io.File
 import kotlin.math.abs
@@ -132,8 +133,9 @@ private fun MediaSwiper(items: List<MediaEntry>, startIndex: Int) {
 private fun SwipeImage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
     var scale by remember(uri) { mutableStateOf(1f) }
     var offset by remember(uri) { mutableStateOf(Offset.Zero) }
+    val context = LocalContext.current
     AsyncImage(
-        model = uri,
+        model = remember(uri) { ImageRequest.Builder(context).data(uri).crossfade(false).build() },
         contentDescription = null,
         contentScale = ContentScale.Fit,
         modifier = Modifier
