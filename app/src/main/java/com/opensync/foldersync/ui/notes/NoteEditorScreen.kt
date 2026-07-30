@@ -71,7 +71,8 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var body by remember { mutableStateOf(TextFieldValue("")) }
     var loaded by remember { mutableStateOf(existing == null) }
     var saving by remember { mutableStateOf(false) }
-    var preview by remember { mutableStateOf(false) }
+    // Open saved notes in view (rendered) mode; start a brand-new note in edit mode.
+    var preview by remember { mutableStateOf(existing != null) }
     var showFind by remember { mutableStateOf(false) }
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
@@ -144,7 +145,19 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             l.startsWith("- [X] ") -> l.replaceFirst("- [X] ", "- [ ] ")
             else -> l
         }
-        commit(body.copy(text = lines.joinToString("\n")))
+        val newText = lines.joinToString("\n")
+        commit(body.copy(text = newText))
+        // In view mode a checkbox tap should stick without opening the editor — persist it now.
+        val target = existing
+        if (preview && target != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { target.writeText(newText) }
+                withContext(Dispatchers.Main) {
+                    com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
+                    com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
+                }
+            }
+        }
     }
 
     fun findNext() {
@@ -194,8 +207,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         topBar = {
             TopAppBar(
                 title = {
-                    Text(if (existing == null) "New note" else "Edit note",
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val label = when {
+                        existing == null -> "New note"
+                        preview -> "Note"
+                        else -> "Edit note"
+                    }
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
