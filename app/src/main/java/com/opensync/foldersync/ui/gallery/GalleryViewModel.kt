@@ -1,6 +1,7 @@
 package com.opensync.foldersync.ui.gallery
 
 import android.media.MediaScannerConnection
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
@@ -13,6 +14,7 @@ import com.opensync.foldersync.gallery.GalleryRepository
 import com.opensync.foldersync.gallery.GallerySource
 import com.opensync.foldersync.gallery.MediaItem
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -324,6 +326,38 @@ class GalleryViewModel : ViewModel() {
                 refreshAfterOp(paths)
             } catch (e: Exception) {
                 _state.update { it.copy(busyMessage = null, error = e.message ?: "Delete failed") }
+            }
+        }
+    }
+
+    /** Encrypt the selected media into the vault and remove the originals. */
+    fun moveSelectedToVault() {
+        val items = selectedFiles().filter { !it.isDirectory }
+        if (items.isEmpty()) return
+        val s = _state.value
+        val local = (s.source is GallerySource.Provider && s.source.location == ExplorerLocation.LocalRoot) ||
+            (s.source is GallerySource.Device && s.inAlbum)
+        viewModelScope.launch {
+            when {
+                !VaultManager.exists() ->
+                    _state.update { it.copy(error = "Create a vault first (Vault tab).") }
+                !VaultManager.isUnlocked ->
+                    _state.update { it.copy(error = "Unlock the vault first (Vault tab).") }
+                else -> {
+                    val paths = items.map { absPath(it.relPath) }
+                    _state.update { it.copy(busyMessage = "Moving to vault…") }
+                    val err = withContext(Dispatchers.IO) {
+                        runCatching {
+                            for (item in items) {
+                                val file = repo.materialize(item)
+                                VaultManager.importFile(Uri.fromFile(file))
+                                if (!local) repo.delete(listOf(item)) // also drop the remote original
+                            }
+                        }.exceptionOrNull()?.message
+                    }
+                    _state.update { it.copy(busyMessage = null, selection = emptySet(), error = err) }
+                    refreshAfterOp(paths)
+                }
             }
         }
     }
