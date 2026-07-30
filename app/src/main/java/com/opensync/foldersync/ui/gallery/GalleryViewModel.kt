@@ -140,27 +140,19 @@ class GalleryViewModel : ViewModel() {
     }
 
     fun openDeviceAlbum(album: Album) {
-        // Prefer browsing the album's real folder (full file controls); fall back to MediaStore.
-        if (album.directory.isNotBlank()) {
-            viewModelScope.launch {
-                repo.setProviderLocation(ExplorerLocation.LocalRoot)
+        // Load via MediaStore (indexed → sub-second) instead of a per-file folder stat, which took
+        // ~10s on a large camera roll over the FUSE storage layer. File management for device photos
+        // lives in the Internal-storage source / Files tab.
+        viewModelScope.launch {
+            _state.update { it.copy(loading = true, error = null, selection = emptySet()) }
+            try {
+                val media = repo.deviceMedia(album.id)
                 _state.update {
-                    it.copy(inAlbum = true, title = album.name, albumBaseDir = album.directory, selection = emptySet())
+                    it.copy(media = media, folders = emptyList(), inAlbum = true,
+                        title = album.name, albumBaseDir = null, relDir = "", loading = false)
                 }
-                navigateProvider(album.directory)
-            }
-        } else {
-            viewModelScope.launch {
-                _state.update { it.copy(loading = true, error = null) }
-                try {
-                    val media = repo.deviceMedia(album.id)
-                    _state.update {
-                        it.copy(media = media, folders = emptyList(), inAlbum = true,
-                            title = album.name, albumBaseDir = null, loading = false)
-                    }
-                } catch (e: Exception) {
-                    _state.update { it.copy(loading = false, error = e.message ?: "Cannot open album") }
-                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false, error = e.message ?: "Cannot open album") }
             }
         }
     }
