@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
@@ -364,19 +365,33 @@ private fun SelectionBar(
         },
         title = { Text("$count selected") },
         actions = {
-            if (canRename) {
-                IconButton(onClick = onDetails) {
-                    Icon(Icons.Filled.Info, contentDescription = "Details")
-                }
-                IconButton(onClick = onRename) {
-                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
-                }
-            }
+            // Keep the primary actions as icons; overflow the rest so nothing gets clipped off-screen.
             IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
             IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
             IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
-            IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
+            Box {
+                var overflow by remember { mutableStateOf(false) }
+                IconButton(onClick = { overflow = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                    if (canRename) {
+                        DropdownMenuItem(
+                            text = { Text("Details") },
+                            onClick = { overflow = false; onDetails() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rename") },
+                            onClick = { overflow = false; onRename() }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Select all") },
+                        onClick = { overflow = false; onSelectAll() }
+                    )
+                }
+            }
         }
     )
 }
