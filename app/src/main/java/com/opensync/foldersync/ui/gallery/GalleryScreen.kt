@@ -70,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -87,6 +88,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -557,26 +559,30 @@ private fun MediaViewer(
 
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
         Box(Modifier.fillMaxSize()) {
-            // Preload neighbouring device photos at display size (drawn invisibly under the current
-            // image) so the first swipe is instant instead of a blank flash.
-            for (i in intArrayOf(index - 1, index + 1)) {
-                val nb = items.getOrNull(i)
-                val uri = nb?.deviceUri
-                if (uri != null && !nb.isVideo) {
-                    AsyncImage(
-                        model = uri,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().alpha(0f)
-                    )
+            // Filmstrip: keep the previous / current / next pages composed and keyed by item, so the
+            // page preloaded off-screen (decoded, invisible) is the *same* composable shown after a
+            // swipe — no reload, no blank flash. Only the current page is visible + handles gestures.
+            for (i in intArrayOf(index - 1, index, index + 1)) {
+                val item = items.getOrNull(i) ?: continue
+                if (item.isVideo && i != index) continue  // don't preload heavy video neighbours
+                key(item.key) {
+                    val active = i == index
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .zIndex(if (active) 1f else 0f)
+                            .alpha(if (active) 1f else 0f)
+                    ) {
+                        MediaPage(
+                            item = item,
+                            materialize = materialize,
+                            active = active,
+                            onPrev = { if (index > 0) index-- },
+                            onNext = { if (index < items.size - 1) index++ }
+                        )
+                    }
                 }
             }
-            MediaPage(
-                items[index],
-                materialize,
-                onPrev = { if (index > 0) index-- },
-                onNext = { if (index < items.size - 1) index++ }
-            )
         }
     }
 }
@@ -585,6 +591,7 @@ private fun MediaViewer(
 private fun MediaPage(
     item: MediaItem,
     materialize: suspend (MediaItem) -> File,
+    active: Boolean,
     onPrev: () -> Unit,
     onNext: () -> Unit
 ) {
@@ -593,15 +600,15 @@ private fun MediaPage(
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
-            model == null -> CircularProgressIndicator(color = Color.White)
-            item.isVideo -> VideoPlayer(model!!, onPrev = onPrev, onNext = onNext)
-            else -> ZoomableImage(model, onPrev = onPrev, onNext = onNext)
+            model == null -> if (active) CircularProgressIndicator(color = Color.White)
+            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext)
+            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext)
         }
     }
 }
 
 @Composable
-private fun VideoPlayer(model: Any, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
+private fun VideoPlayer(model: Any, active: Boolean = true, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
     val context = LocalContext.current
     val uri: Uri = when (model) {
         is Uri -> model
@@ -616,7 +623,7 @@ private fun VideoPlayer(model: Any, onPrev: () -> Unit = {}, onNext: () -> Unit 
         }
     }
     DisposableEffect(uri) { onDispose { exo.release() } }
-    Box(Modifier.fillMaxSize().horizontalSwipe(uri, onPrev, onNext)) {
+    Box(Modifier.fillMaxSize().then(if (active) Modifier.horizontalSwipe(uri, onPrev, onNext) else Modifier)) {
         AndroidView(
             factory = { ctx -> PlayerView(ctx).apply { player = exo } },
             modifier = Modifier.fillMaxSize()
@@ -652,7 +659,7 @@ private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () ->
     }
 
 @Composable
-private fun ZoomableImage(model: Any?, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
+private fun ZoomableImage(model: Any?, active: Boolean = true, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
     var scale by remember(model) { mutableStateOf(1f) }
     var offset by remember(model) { mutableStateOf(Offset.Zero) }
     val context = LocalContext.current
@@ -662,14 +669,16 @@ private fun ZoomableImage(model: Any?, onPrev: () -> Unit = {}, onNext: () -> Un
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
-            // Double-tap toggles between fit and 2.5× zoom.
-            .pointerInput(model) {
+            // Double-tap toggles between fit and 2.5× zoom. (Only the visible page reacts.)
+            .pointerInput(model, active) {
+                if (!active) return@pointerInput
                 detectTapGestures(onDoubleTap = {
                     if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
                 })
             }
             // Pinch/pan when zoomed; otherwise a horizontal swipe jumps to the next item instantly.
-            .pointerInput(model) {
+            .pointerInput(model, active) {
+                if (!active) return@pointerInput
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var dx = 0f
