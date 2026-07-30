@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -184,7 +186,8 @@ fun ExplorerScreen(
                     Text("Empty folder", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                LazyColumn(Modifier.weight(1f)) {
+                val listState = rememberLazyListState()
+                LazyColumn(Modifier.weight(1f).verticalScrollbar(listState), state = listState) {
                     items(state.entries, key = { it.relPath }) { item ->
                         ExplorerRow(
                             item = item,

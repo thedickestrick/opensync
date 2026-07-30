@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -201,11 +202,13 @@ fun AccountEditScreen(
             )
         }
     ) { inner ->
+        val scrollState = rememberScrollState()
         Column(
             Modifier
                 .padding(inner)
+                .verticalScrollbar(scrollState)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedTextField(

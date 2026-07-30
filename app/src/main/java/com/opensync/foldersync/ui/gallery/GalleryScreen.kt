@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -414,9 +416,11 @@ private fun AlbumGrid(albums: List<Album>, bottomInset: Dp, onOpen: (Album) -> U
         EmptyBox("No albums")
         return
     }
+    val gridState = rememberLazyGridState()
     LazyVerticalGrid(
         columns = GridCells.Adaptive(120.dp),
-        modifier = Modifier.fillMaxSize(),
+        state = gridState,
+        modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
         contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 8.dp + bottomInset)
     ) {
         items(albums, key = { it.id }) { album ->
@@ -449,9 +453,11 @@ private fun MediaGrid(
         EmptyBox("No photos or videos here")
         return
     }
+    val gridState = rememberLazyGridState()
     LazyVerticalGrid(
         columns = GridCells.Adaptive(110.dp),
-        modifier = Modifier.fillMaxSize(),
+        state = gridState,
+        modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
         contentPadding = PaddingValues(start = 6.dp, top = 6.dp, end = 6.dp, bottom = 6.dp + bottomInset)
     ) {
         items(folders, key = { "f:${it.relPath}" }) { folder ->

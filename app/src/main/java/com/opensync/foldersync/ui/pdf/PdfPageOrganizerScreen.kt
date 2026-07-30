@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -162,8 +164,11 @@ fun PdfPageOrganizerScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     modifier = Modifier.align(Alignment.Center).padding(16.dp)
                 )
                 doc == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                else -> LazyColumn(
-                    Modifier.fillMaxSize(),
+                else -> {
+                  val listState = rememberLazyListState()
+                  LazyColumn(
+                    Modifier.fillMaxSize().verticalScrollbar(listState),
+                    state = listState,
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -185,6 +190,7 @@ fun PdfPageOrganizerScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                             onDown = { if (position < pages.size - 1) pages = pages.swap(position, position + 1) }
                         )
                     }
+                  }
                 }
             }
 

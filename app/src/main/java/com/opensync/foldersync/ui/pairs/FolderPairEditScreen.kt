@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -156,11 +158,13 @@ fun FolderPairEditScreen(
             )
         }
     ) { inner ->
+        val scrollState = rememberScrollState()
         Column(
             Modifier
                 .padding(inner)
+                .verticalScrollbar(scrollState)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedTextField(
@@ -417,7 +421,8 @@ private fun FolderPickerDialog(
                 style = MaterialTheme.typography.titleSmall)
         },
         text = {
-            LazyColumn(Modifier.height(320.dp)) {
+            val pickerState = rememberLazyListState()
+            LazyColumn(Modifier.height(320.dp).verticalScrollbar(pickerState), state = pickerState) {
                 current.parentFile?.let { parent ->
                     item {
                         Row(
@@ -511,7 +516,8 @@ private fun RemoteFolderPickerDialog(
             )
         },
         text = {
-            LazyColumn(Modifier.height(320.dp)) {
+            val pickerState = rememberLazyListState()
+            LazyColumn(Modifier.height(320.dp).verticalScrollbar(pickerState), state = pickerState) {
                 if (relDir.isNotEmpty()) {
                     item {
                         Row(
