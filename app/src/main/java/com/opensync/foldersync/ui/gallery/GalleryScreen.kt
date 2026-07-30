@@ -265,7 +265,7 @@ fun GalleryScreen(
                         onOpenFolder = vm::openFolder,
                         onOpenMedia = vm::openViewer,
                         onToggleFolder = { folder -> vm.toggleSelect(folder.relPath) },
-                        onToggleMedia = { item -> item.remoteFile?.let { vm.toggleSelect(it.relPath) } }
+                        onToggleMedia = { item -> vm.toggleSelect(item.key) }
                     )
                 }
             }
@@ -530,7 +530,7 @@ private fun MediaGrid(
             }
         }
         itemsIndexed(media, key = { _, m -> "m:${m.key}" }, contentType = { _, _ -> "media" }) { index, item ->
-            val selected = item.remoteFile?.let { it.relPath in selection } ?: false
+            val selected = item.key in selection
             Box(
                 Modifier.padding(3.dp).combinedClickable(
                     onClick = { if (selectionMode) onToggleMedia(item) else onOpenMedia(index) },

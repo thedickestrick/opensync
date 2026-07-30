@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.gallery
 
+import android.media.MediaScannerConnection
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
@@ -21,7 +22,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 data class GalleryUiState(
     val source: GallerySource = GallerySource.Device,
@@ -69,6 +73,7 @@ class GalleryViewModel : ViewModel() {
 
     private var thumbJob: Job? = null
     private var rawAlbums: List<Album> = emptyList()
+    private var currentBucketId: String? = null
 
     init {
         loadDeviceAlbums()
@@ -104,6 +109,7 @@ class GalleryViewModel : ViewModel() {
     }
 
     private fun loadDeviceAlbums() {
+        currentBucketId = null
         viewModelScope.launch {
             _state.update {
                 it.copy(loading = true, error = null, inAlbum = false, media = emptyList(),
@@ -141,15 +147,23 @@ class GalleryViewModel : ViewModel() {
 
     fun openDeviceAlbum(album: Album) {
         // Load via MediaStore (indexed → sub-second) instead of a per-file folder stat, which took
-        // ~10s on a large camera roll over the FUSE storage layer. File management for device photos
-        // lives in the Internal-storage source / Files tab.
+        // ~10s on a large camera roll over the FUSE layer. The MediaStore rows already carry each
+        // file's path/size/date, so we get full file controls (copy/cut/delete/rename) with no extra
+        // stats. File changes are kept in sync via a quick MediaScanner pass (see refreshAfterOp).
         viewModelScope.launch {
+            currentBucketId = album.id
             _state.update { it.copy(loading = true, error = null, selection = emptySet()) }
             try {
+                if (album.directory.isNotBlank()) repo.setProviderLocation(ExplorerLocation.LocalRoot)
                 val media = repo.deviceMedia(album.id)
                 _state.update {
-                    it.copy(media = media, folders = emptyList(), inAlbum = true,
-                        title = album.name, albumBaseDir = null, relDir = "", loading = false)
+                    it.copy(
+                        media = media, folders = emptyList(), inAlbum = true,
+                        title = album.name,
+                        albumBaseDir = album.directory.ifBlank { null },
+                        relDir = album.directory,
+                        loading = false
+                    )
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message ?: "Cannot open album") }
@@ -173,6 +187,39 @@ class GalleryViewModel : ViewModel() {
             }
         }
     }
+
+    /**
+     * Refresh after a file operation. In a device album the list comes from MediaStore, so we run a
+     * quick MediaScanner pass over the changed paths (keeps the index in sync with the filesystem
+     * change) and then re-query MediaStore — both fast. Elsewhere we just re-list the provider folder.
+     */
+    private fun refreshAfterOp(changedPaths: List<String>) {
+        val s = _state.value
+        val bucket = currentBucketId
+        if (s.source is GallerySource.Device && s.inAlbum && bucket != null) {
+            viewModelScope.launch {
+                scanPaths(changedPaths)
+                val media = withContext(Dispatchers.IO) { repo.deviceMedia(bucket) }
+                _state.update { it.copy(media = media) }
+            }
+        } else {
+            navigateProvider(s.relDir)
+        }
+    }
+
+    private suspend fun scanPaths(paths: List<String>) {
+        if (paths.isEmpty()) return
+        suspendCancellableCoroutine<Unit> { cont ->
+            val remaining = AtomicInteger(paths.size)
+            MediaScannerConnection.scanFile(Graph.appContext, paths.toTypedArray(), null) { _, _ ->
+                if (remaining.decrementAndGet() == 0 && cont.isActive) cont.resumeWith(Result.success(Unit))
+            }
+        }
+    }
+
+    private fun absPath(rel: String) = "/" + rel.trimStart('/')
+    private fun absJoin(dir: String, name: String) =
+        if (dir.isBlank()) "/$name" else "/" + dir.trim('/') + "/" + name
 
     fun back() {
         val s = _state.value
@@ -205,22 +252,24 @@ class GalleryViewModel : ViewModel() {
     fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
 
     fun selectAll() = _state.update {
-        val keys = it.folders.map { f -> f.relPath } + it.media.mapNotNull { m -> m.remoteFile?.relPath }
+        val keys = it.folders.map { f -> f.relPath } + it.media.map { m -> m.key }
         it.copy(selection = keys.toSet())
     }
 
     fun singleSelected(): RemoteFile? = selectedFiles().firstOrNull()
 
-    /** Absolute on-device path for [item] when browsing local folders, else null. */
+    /** Absolute on-device path for [item] when browsing local folders / a device album, else null. */
     fun localAbsolutePath(item: RemoteFile): String? {
-        val src = _state.value.source
-        return if (src is GallerySource.Provider && src.location == ExplorerLocation.LocalRoot) "/" + item.relPath else null
+        val s = _state.value
+        val localProvider = s.source is GallerySource.Provider && s.source.location == ExplorerLocation.LocalRoot
+        val deviceAlbum = s.source is GallerySource.Device && s.inAlbum
+        return if (localProvider || deviceAlbum) "/" + item.relPath.trimStart('/') else null
     }
 
     private fun selectedFiles(): List<RemoteFile> {
         val st = _state.value
         val folders = st.folders.filter { it.relPath in st.selection }
-        val media = st.media.mapNotNull { it.remoteFile }.filter { it.relPath in st.selection }
+        val media = st.media.filter { it.key in st.selection }.mapNotNull { it.remoteFile }
         return folders + media
     }
 
@@ -244,16 +293,19 @@ class GalleryViewModel : ViewModel() {
     fun paste() {
         val clip = clipboard ?: return
         viewModelScope.launch {
+            val dest = _state.value.relDir
             _state.update { it.copy(busyMessage = "Preparing…") }
             try {
                 repo.paste(
-                    clip, _state.value.relDir,
+                    clip, dest,
                     { name -> _state.update { it.copy(busyMessage = "Copying $name") } },
                     { false }
                 )
                 if (clip.move) clipboard = null
                 _state.update { it.copy(busyMessage = null, hasClipboard = clipboard != null) }
-                navigateProvider(_state.value.relDir)
+                val changed = clip.items.map { absJoin(dest, it.name) } +
+                    if (clip.move) clip.items.map { absPath(it.relPath) } else emptyList()
+                refreshAfterOp(changed)
             } catch (e: Exception) {
                 _state.update { it.copy(busyMessage = null, error = e.message ?: "Paste failed") }
             }
@@ -266,9 +318,10 @@ class GalleryViewModel : ViewModel() {
         viewModelScope.launch {
             _state.update { it.copy(busyMessage = "Deleting…") }
             try {
+                val paths = items.map { absPath(it.relPath) }
                 repo.delete(items)
                 _state.update { it.copy(busyMessage = null, selection = emptySet()) }
-                navigateProvider(_state.value.relDir)
+                refreshAfterOp(paths)
             } catch (e: Exception) {
                 _state.update { it.copy(busyMessage = null, error = e.message ?: "Delete failed") }
             }
@@ -278,9 +331,11 @@ class GalleryViewModel : ViewModel() {
     fun renameItem(item: RemoteFile, newName: String) {
         viewModelScope.launch {
             try {
+                val oldPath = absPath(item.relPath)
+                val newPath = oldPath.substringBeforeLast('/', "") + "/" + newName.trim()
                 repo.rename(item, newName)
                 _state.update { it.copy(selection = emptySet()) }
-                navigateProvider(_state.value.relDir)
+                refreshAfterOp(listOf(oldPath, newPath))
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Rename failed") }
             }
@@ -292,7 +347,7 @@ class GalleryViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 repo.createFolder(_state.value.relDir, name)
-                navigateProvider(_state.value.relDir)
+                refreshAfterOp(emptyList())
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Cannot create folder") }
             }
