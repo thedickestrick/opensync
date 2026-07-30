@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
@@ -109,7 +110,7 @@ private fun isVideo(name: String) = name.lowercase().let { n -> VIDEO_EXTS.any {
 @Composable
 private fun MediaSwiper(items: List<MediaEntry>, startIndex: Int) {
     var index by remember { mutableStateOf(startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) }
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         // Preload the neighbours at display size (drawn invisibly under the current image) so the
         // first swipe shows the next picture instantly instead of a blank flash.
         for (i in intArrayOf(index - 1, index + 1)) {
