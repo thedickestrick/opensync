@@ -22,7 +22,7 @@ class GalleryRepository(private val context: Context) {
 
     private data class Row(
         val id: Long, val name: String, val bucketId: String, val bucketName: String,
-        val date: Long, val uri: Uri, val isVideo: Boolean, val path: String
+        val date: Long, val uri: Uri, val isVideo: Boolean, val path: String, val size: Long
     )
 
     suspend fun deviceAlbums(): List<Album> = withContext(Dispatchers.IO) {
@@ -47,7 +47,27 @@ class GalleryRepository(private val context: Context) {
     suspend fun deviceMedia(bucketId: String): List<MediaItem> = withContext(Dispatchers.IO) {
         queryDevice(bucketId)
             .sortedByDescending { it.date }
-            .map { MediaItem(it.uri.toString(), it.name, it.isVideo, deviceUri = it.uri, thumbModel = it.uri) }
+            .map { row ->
+                // Carry the real file (path/size/date from the MediaStore row, no extra stat) so the
+                // gallery's file controls (copy/cut/delete/rename) work on device photos too.
+                val rf = row.path.takeIf { it.isNotEmpty() }?.let {
+                    RemoteFile(
+                        relPath = it.trimStart('/'),
+                        name = row.name,
+                        isDirectory = false,
+                        size = row.size,
+                        modifiedTime = row.date * 1000L
+                    )
+                }
+                MediaItem(
+                    key = row.uri.toString(),
+                    name = row.name,
+                    isVideo = row.isVideo,
+                    deviceUri = row.uri,
+                    remoteFile = rf,
+                    thumbModel = row.uri
+                )
+            }
     }
 
     private fun queryDevice(bucketId: String?): List<Row> {
@@ -63,6 +83,7 @@ class GalleryRepository(private val context: Context) {
             add(MediaStore.MediaColumns._ID)
             add(MediaStore.MediaColumns.DISPLAY_NAME)
             add(MediaStore.MediaColumns.DATE_MODIFIED)
+            add(MediaStore.MediaColumns.SIZE)
             @Suppress("DEPRECATION")
             add(MediaStore.MediaColumns.DATA)
             if (hasBuckets) {
@@ -80,6 +101,7 @@ class GalleryRepository(private val context: Context) {
             val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+            val sizeCol = c.getColumnIndex(MediaStore.MediaColumns.SIZE)
             @Suppress("DEPRECATION")
             val dataCol = c.getColumnIndex(MediaStore.MediaColumns.DATA)
             val bIdCol = if (hasBuckets) c.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID) else -1
@@ -89,6 +111,7 @@ class GalleryRepository(private val context: Context) {
                 val bId = if (bIdCol >= 0 && !c.isNull(bIdCol)) c.getString(bIdCol) else "0"
                 val bName = if (bNameCol >= 0 && !c.isNull(bNameCol)) c.getString(bNameCol) else "Device"
                 val filePath = if (dataCol >= 0 && !c.isNull(dataCol)) c.getString(dataCol) else ""
+                val size = if (sizeCol >= 0 && !c.isNull(sizeCol)) c.getLong(sizeCol) else 0L
                 out += Row(
                     id = id,
                     name = c.getString(nameCol) ?: "",
@@ -97,7 +120,8 @@ class GalleryRepository(private val context: Context) {
                     date = c.getLong(dateCol),
                     uri = ContentUris.withAppendedId(collection, id),
                     isVideo = isVideo,
-                    path = filePath
+                    path = filePath,
+                    size = size
                 )
             }
         }
