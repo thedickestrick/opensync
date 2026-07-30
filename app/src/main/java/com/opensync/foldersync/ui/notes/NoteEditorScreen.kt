@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.notes
 
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatStrikethrough
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.notes.NoteEditRequest
+import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,6 +82,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showVaultConfirm by remember { mutableStateOf(false) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
 
@@ -186,6 +190,26 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         }
     }
 
+    /** Encrypt this note into the vault and remove the plaintext file (persists current text first). */
+    fun vaultNote() {
+        val file = existing ?: return
+        scope.launch {
+            val err = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (loaded) file.writeText(body.text) // capture any pending edits
+                    VaultManager.importFile(Uri.fromFile(file)) // encrypts, then deletes the original
+                }.exceptionOrNull()
+            }
+            if (err != null) {
+                Toast.makeText(context, err.message ?: "Couldn't move to vault", Toast.LENGTH_LONG).show()
+            } else {
+                com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
+                com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
+                onBack()
+            }
+        }
+    }
+
     fun save() {
         val targetDir = existing?.parentFile ?: dir?.let { File(it) }
         if (targetDir == null) {
@@ -234,6 +258,17 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                 },
                 actions = {
                     if (existing != null) {
+                        IconButton(onClick = {
+                            when {
+                                !VaultManager.exists() ->
+                                    Toast.makeText(context, "Create a vault first (Vault tab).", Toast.LENGTH_LONG).show()
+                                !VaultManager.isUnlocked ->
+                                    Toast.makeText(context, "Unlock the vault first (Vault tab).", Toast.LENGTH_LONG).show()
+                                else -> showVaultConfirm = true
+                            }
+                        }) {
+                            Icon(Icons.Filled.Lock, contentDescription = "Move to vault")
+                        }
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete note")
                         }
@@ -322,6 +357,17 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                 TextButton(onClick = { showDeleteConfirm = false; deleteNote() }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
+        )
+    }
+    if (showVaultConfirm) {
+        AlertDialog(
+            onDismissRequest = { showVaultConfirm = false },
+            title = { Text("Move to vault?") },
+            text = { Text("This note will be encrypted into the vault and removed from your notes folder.") },
+            confirmButton = {
+                TextButton(onClick = { showVaultConfirm = false; vaultNote() }) { Text("Move") }
+            },
+            dismissButton = { TextButton(onClick = { showVaultConfirm = false }) { Text("Cancel") } }
         )
     }
 }
