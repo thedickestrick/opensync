@@ -3,6 +3,7 @@ package com.opensync.foldersync.ui
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
@@ -243,7 +244,8 @@ fun AppRoot() {
 @Composable
 private fun DrawerContent(currentRoute: String?, onNavigate: (String) -> Unit) {
     ModalDrawerSheet {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
+        val scrollState = rememberScrollState()
+        Column(Modifier.verticalScrollbar(scrollState).verticalScroll(scrollState)) {
             Text(
                 "OpenSync",
                 style = MaterialTheme.typography.headlineSmall,

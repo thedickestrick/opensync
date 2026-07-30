@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +43,8 @@ fun MarkdownView(
     val imageRegex = remember { Regex("^!\\[.*?]\\((.+)\\)\\s*$") }
     val numberedRegex = remember { Regex("^\\d{1,3}\\. .*") }
 
-    Column(modifier.verticalScroll(rememberScrollState()).padding(4.dp)) {
+    val scrollState = rememberScrollState()
+    Column(modifier.verticalScrollbar(scrollState).verticalScroll(scrollState).padding(4.dp)) {
         var i = 0
         while (i < lines.size) {
             val index = i

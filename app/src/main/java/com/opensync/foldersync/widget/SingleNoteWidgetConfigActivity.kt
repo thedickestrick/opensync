@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Scaffold
@@ -85,8 +87,10 @@ private fun ChooseNoteScreen(onPick: (String) -> Unit, onCancel: () -> Unit) {
                 )
             }
         } else {
+            val listState = rememberLazyListState()
             LazyColumn(
-                Modifier.padding(inner).fillMaxSize(),
+                Modifier.padding(inner).fillMaxSize().verticalScrollbar(listState),
+                state = listState,
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
                 items(notes) { note ->

@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -128,8 +130,11 @@ fun PdfFormScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Center).padding(24.dp)
                 )
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                else -> {
+                  val listState = rememberLazyListState()
+                  LazyColumn(
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(listState),
+                    state = listState,
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -140,6 +145,7 @@ fun PdfFormScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                             onChange = { setValue(field.fullName, it) }
                         )
                     }
+                  }
                 }
             }
             if (busy) {

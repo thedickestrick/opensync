@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -542,8 +544,11 @@ fun NotesScreen(
             when {
                 state.rootDir.isBlank() -> SetupCard(Modifier.align(Alignment.Center)) { showRootPicker = true }
                 state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                else -> {
+                  val notesListState = rememberLazyListState()
+                  LazyColumn(
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(notesListState),
+                    state = notesListState,
                     contentPadding = PaddingValues(bottom = 88.dp)
                 ) {
                     if (state.canGoUp) {
@@ -588,6 +593,7 @@ fun NotesScreen(
                             onLongClick = { vm.toggle(entry.path) }
                         )
                     }
+                  }
                 }
             }
         }
@@ -850,7 +856,8 @@ private fun NotesFolderPickerDialog(initial: String, onDismiss: () -> Unit, onSe
                 style = MaterialTheme.typography.titleSmall)
         },
         text = {
-            LazyColumn(Modifier.height(340.dp)) {
+            val pickerState = rememberLazyListState()
+            LazyColumn(Modifier.height(340.dp).verticalScrollbar(pickerState), state = pickerState) {
                 current.parentFile?.let { parent ->
                     item {
                         Row(

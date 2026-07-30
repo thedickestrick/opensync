@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
@@ -136,8 +138,10 @@ fun PdfViewerScreen(
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else -> BoxWithConstraints(Modifier.fillMaxSize()) {
                     val baseWidthPx = constraints.maxWidth
+                    val listState = rememberLazyListState()
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().verticalScrollbar(listState),
+                        state = listState,
                         contentPadding = PaddingValues(vertical = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
