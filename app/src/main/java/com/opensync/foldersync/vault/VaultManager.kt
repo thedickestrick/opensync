@@ -21,7 +21,9 @@ data class VaultEntry(
     val name: String,
     val size: Long,
     val mime: String,
-    val addedAt: Long
+    val addedAt: Long,
+    /** Folder path this entry lives in within the vault ("" = vault root, else "a/b"). */
+    val dir: String = ""
 )
 
 /** Outcome of moving a file into the vault. [originalRemoved] is false if the source still remains. */
@@ -62,7 +64,7 @@ object VaultManager {
             .put("wrappedKey", VaultCrypto.b64(VaultCrypto.seal(kek, dek.encoded)))
         metaFile.writeText(meta.toString())
         masterKey = dek
-        saveIndex(emptyList())
+        writeIndex(emptyList(), emptySet())
     }
 
     /** @return true if [password] was correct and the vault is now unlocked. */
@@ -97,21 +99,38 @@ object VaultManager {
         backgroundedAt = 0L
     }
 
-    fun listEntries(): List<VaultEntry> {
-        val key = masterKey ?: return emptyList()
-        if (!indexFile.exists()) return emptyList()
-        val json = String(decryptBytes(key, indexFile.readBytes()))
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i)
-            VaultEntry(
-                id = o.getString("id"),
-                name = o.getString("name"),
-                size = o.getLong("size"),
-                mime = o.optString("mime", "application/octet-stream"),
-                addedAt = o.optLong("addedAt", 0)
-            )
-        }.sortedByDescending { it.addedAt }
+    /** All entries across every folder. */
+    fun listEntries(): List<VaultEntry> = readIndex().first.sortedByDescending { it.addedAt }
+
+    /** Files that live directly in [dir]. */
+    fun entriesIn(dir: String): List<VaultEntry> =
+        readIndex().first.filter { it.dir == dir }.sortedByDescending { it.addedAt }
+
+    /** Immediate subfolder names of [dir]. */
+    fun subFolders(dir: String): List<String> =
+        readIndex().second.filter { it.substringBeforeLast('/', "") == dir }
+            .map { it.substringAfterLast('/') }
+            .sortedBy { it.lowercase() }
+
+    fun createFolder(parentDir: String, name: String) {
+        val clean = name.trim().replace('/', '_')
+        if (clean.isBlank()) return
+        val (entries, folders) = readIndex()
+        val path = if (parentDir.isEmpty()) clean else "$parentDir/$clean"
+        writeIndex(entries, folders + ancestorsOf(path) + path)
+    }
+
+    /** Recursively delete a folder and everything under it. */
+    fun deleteFolder(path: String) {
+        masterKey ?: return
+        val (entries, folders) = readIndex()
+        val prefix = "$path/"
+        val removed = entries.filter { it.dir == path || it.dir.startsWith(prefix) }
+        removed.forEach { File(blobsDir, it.id).delete() }
+        writeIndex(
+            entries - removed.toSet(),
+            folders.filter { it != path && !it.startsWith(prefix) }.toSet()
+        )
     }
 
     /**
@@ -119,7 +138,7 @@ object VaultManager {
      * original (the whole point of a vault). [ImportResult.originalRemoved] is false if the source
      * couldn't be deleted, so the caller can warn the user.
      */
-    fun importFile(uri: Uri): ImportResult {
+    fun importFile(uri: Uri, dir: String = ""): ImportResult {
         val key = masterKey ?: error("Vault is locked")
         blobsDir.mkdirs()
         val name = queryName(uri)
@@ -129,8 +148,11 @@ object VaultManager {
         val size = ctx.contentResolver.openInputStream(uri)?.use { input ->
             blob.outputStream().use { out -> VaultCrypto.encryptStream(key, input, out) }
         } ?: run { blob.delete(); error("Could not read the selected file") }
-        val entry = VaultEntry(id, name, size, mime, System.currentTimeMillis())
-        saveIndex(listEntries() + entry)
+        val entry = VaultEntry(id, name, size, mime, System.currentTimeMillis(), dir)
+        val (entries, folders) = readIndex()
+        val folderSet = (folders + ancestorsOf(dir)).toMutableSet()
+        if (dir.isNotEmpty()) folderSet += dir
+        writeIndex(entries + entry, folderSet)
         // Only delete the original after the encrypted copy is safely stored above.
         val removed = runCatching { deleteOriginal(uri) }.getOrDefault(false)
         return ImportResult(entry, removed)
@@ -201,7 +223,8 @@ object VaultManager {
     fun deleteEntry(entry: VaultEntry) {
         masterKey ?: return
         File(blobsDir, entry.id).delete()
-        saveIndex(listEntries().filter { it.id != entry.id })
+        val (entries, folders) = readIndex()
+        writeIndex(entries.filter { it.id != entry.id }, folders)
     }
 
     /** Re-wrap the master key under a new passphrase (does not touch any blobs). */
@@ -218,18 +241,59 @@ object VaultManager {
         return true
     }
 
-    private fun saveIndex(entries: List<VaultEntry>) {
+    /** Decrypt the index into (entries, folder paths). Reads the legacy flat-array format too. */
+    private fun readIndex(): Pair<List<VaultEntry>, Set<String>> {
+        val key = masterKey ?: return emptyList<VaultEntry>() to emptySet()
+        if (!indexFile.exists()) return emptyList<VaultEntry>() to emptySet()
+        val json = String(decryptBytes(key, indexFile.readBytes()))
+        val entries = mutableListOf<VaultEntry>()
+        val folders = mutableSetOf<String>()
+        if (json.trimStart().startsWith("[")) {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) entries += parseEntry(arr.getJSONObject(i))
+        } else {
+            val obj = JSONObject(json)
+            obj.optJSONArray("entries")?.let { for (i in 0 until it.length()) entries += parseEntry(it.getJSONObject(i)) }
+            obj.optJSONArray("folders")?.let { for (i in 0 until it.length()) folders += it.getString(i) }
+        }
+        // Make sure every entry's folder (and its ancestors) is represented.
+        entries.forEach { if (it.dir.isNotEmpty()) { folders += it.dir; folders += ancestorsOf(it.dir) } }
+        return entries to folders
+    }
+
+    private fun writeIndex(entries: List<VaultEntry>, folders: Set<String>) {
         val key = masterKey ?: error("Vault is locked")
         val arr = JSONArray()
         entries.forEach { e ->
             arr.put(
                 JSONObject()
                     .put("id", e.id).put("name", e.name).put("size", e.size)
-                    .put("mime", e.mime).put("addedAt", e.addedAt)
+                    .put("mime", e.mime).put("addedAt", e.addedAt).put("dir", e.dir)
             )
         }
+        val fArr = JSONArray()
+        folders.filter { it.isNotBlank() }.forEach { fArr.put(it) }
+        val obj = JSONObject().put("entries", arr).put("folders", fArr)
         vaultDir.mkdirs()
-        indexFile.writeBytes(encryptBytes(key, arr.toString().toByteArray()))
+        indexFile.writeBytes(encryptBytes(key, obj.toString().toByteArray()))
+    }
+
+    private fun parseEntry(o: JSONObject) = VaultEntry(
+        id = o.getString("id"),
+        name = o.getString("name"),
+        size = o.getLong("size"),
+        mime = o.optString("mime", "application/octet-stream"),
+        addedAt = o.optLong("addedAt", 0),
+        dir = o.optString("dir", "")
+    )
+
+    /** All ancestor folder paths of [path] (e.g. "a/b/c" → ["a", "a/b"]). */
+    private fun ancestorsOf(path: String): Set<String> {
+        if (path.isEmpty()) return emptySet()
+        val out = mutableSetOf<String>()
+        var p = path.substringBeforeLast('/', "")
+        while (p.isNotEmpty()) { out += p; p = p.substringBeforeLast('/', "") }
+        return out
     }
 
     private fun encryptBytes(key: SecretKey, data: ByteArray): ByteArray {
