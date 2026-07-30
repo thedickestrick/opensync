@@ -118,8 +118,16 @@ class VaultViewModel : ViewModel() {
 
     fun lock() { VaultManager.lock(); refresh() }
 
-    fun import(uris: List<Uri>) = io {
-        uris.forEach { VaultManager.importFile(it) }
+    fun import(uris: List<Uri>) = viewModelScope.launch {
+        _state.update { it.copy(busy = true, error = null) }
+        val outcome = withContext(Dispatchers.IO) {
+            runCatching { uris.count { !VaultManager.importFile(it).originalRemoved } }
+        }
+        val err = outcome.exceptionOrNull()?.message
+            ?: outcome.getOrNull()?.takeIf { it > 0 }
+                ?.let { "Moved to vault, but couldn't delete $it original(s) — remove them manually." }
+        _state.update { it.copy(busy = false, error = err) }
+        refresh()
     }
 
     fun delete(entry: VaultEntry) = io { VaultManager.deleteEntry(entry) }
@@ -202,7 +210,8 @@ fun VaultScreen(
                 !state.exists -> CreateVault(Modifier.align(Alignment.Center)) { vm.create(it) }
                 !state.unlocked -> UnlockVault(Modifier.align(Alignment.Center), state.busy) { vm.unlock(it) }
                 state.entries.isEmpty() -> Text(
-                    "Vault is empty.\nTap + to add files — they're encrypted on this device.",
+                    "Vault is empty.\nTap + to move files in — they're encrypted here and " +
+                        "removed from their original location.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Center).padding(24.dp)
