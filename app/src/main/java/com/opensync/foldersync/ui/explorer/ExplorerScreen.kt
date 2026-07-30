@@ -18,6 +18,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import com.opensync.foldersync.gallery.isImageName
+import com.opensync.foldersync.gallery.isVideoName
+import com.opensync.foldersync.ui.common.DetailsInfo
+import com.opensync.foldersync.ui.common.FileDetailsDialog
+import com.opensync.foldersync.ui.common.fileTypeLabel
 import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +38,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
@@ -97,6 +103,7 @@ fun ExplorerScreen(
 
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    var detailsTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -124,6 +131,7 @@ fun ExplorerScreen(
                     onCut = vm::cutSelected,
                     onDelete = { showDeleteConfirm = true },
                     onRename = { renameTarget = vm.singleSelected(state) },
+                    onDetails = { detailsTarget = vm.singleSelected(state) },
                     onSelectAll = vm::selectAll,
                     canRename = state.selection.size == 1
                 )
@@ -221,6 +229,23 @@ fun ExplorerScreen(
             onConfirm = { name -> vm.rename(target, name); renameTarget = null }
         )
     }
+    detailsTarget?.let { target ->
+        val localPath = vm.localAbsolutePath(target)
+        FileDetailsDialog(
+            info = DetailsInfo(
+                name = target.name,
+                isDirectory = target.isDirectory,
+                typeLabel = fileTypeLabel(target.name, target.isDirectory),
+                location = "${state.locationLabel}/${target.relPath.substringBeforeLast('/', "")}".trimEnd('/'),
+                size = target.size,
+                modified = target.modifiedTime,
+                localPath = localPath,
+                isImage = !target.isDirectory && isImageName(target.name),
+                isVideo = !target.isDirectory && isVideoName(target.name)
+            ),
+            onDismiss = { detailsTarget = null }
+        )
+    }
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -305,6 +330,7 @@ private fun SelectionBar(
     onCut: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
+    onDetails: () -> Unit,
     onSelectAll: () -> Unit,
     canRename: Boolean
 ) {
@@ -315,6 +341,9 @@ private fun SelectionBar(
         title = { Text("$count selected") },
         actions = {
             if (canRename) {
+                IconButton(onClick = onDetails) {
+                    Icon(Icons.Filled.Info, contentDescription = "Details")
+                }
                 IconButton(onClick = onRename) {
                     Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
                 }

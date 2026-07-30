@@ -145,6 +145,10 @@ class ExplorerViewModel : ViewModel() {
 
     fun refresh() = navigate(_state.value.relDir)
 
+    /** Absolute on-device path for [item], or null when browsing a remote account. */
+    fun localAbsolutePath(item: RemoteFile): String? =
+        if (_state.value.location == ExplorerLocation.LocalRoot) "/" + item.relPath else null
+
     fun up() {
         val cur = _state.value.relDir
         if (cur.isEmpty()) return
