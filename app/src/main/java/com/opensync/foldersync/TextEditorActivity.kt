@@ -61,6 +61,7 @@ class TextEditorActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val uri = intent?.data
+            ?: intent?.getStringExtra("note_path")?.let { Uri.fromFile(java.io.File(it)) }
         if (uri == null) { finish(); return }
         val name = displayName(uri)
         setContent {
@@ -103,7 +104,9 @@ class TextEditorActivity : ComponentActivity() {
                 it.write(text.toByteArray(Charsets.UTF_8))
             }
             true
-        }.getOrDefault(false)
+        }.getOrDefault(false).also { ok ->
+            if (ok) com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
+        }
     }
 }
 

@@ -180,6 +180,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
             saving = false
             if (savedPath != null) {
+                com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
                 Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
                 onSaved(savedPath)
             } else {
