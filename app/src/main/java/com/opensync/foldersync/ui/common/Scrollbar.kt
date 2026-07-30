@@ -3,10 +3,15 @@ package com.opensync.foldersync.ui.common
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
@@ -15,133 +20,143 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
 
 /*
- * Lightweight scrollbars. Compose ships none, so these draw a thumb on the trailing edge that
- * fades in while scrolling and fades out when idle — matching native Android scrollbars. One
- * overload per scrollable state type (LazyColumn, LazyVerticalGrid, verticalScroll Column).
+ * Interactive scrollbars. Compose ships none, so these draw a thumb on the trailing edge that you can
+ * also grab and drag to fast-scroll. One overload per scrollable state type (LazyColumn,
+ * LazyVerticalGrid, verticalScroll Column). The thumb is always faintly visible so it's discoverable,
+ * and brightens while scrolling or dragging.
  */
 
-private const val FADE_IN_MS = 90
-private const val FADE_OUT_MS = 500
-
 private object Sb {
-    val WIDTH = 4.dp
-    const val MIN_THUMB = 24f  // px, so the thumb stays grabbable on very long lists
+    val WIDTH = 5.dp
+    val TOUCH = 28.dp   // grabbable strip on the right edge
+    val GRAB_PAD = 10.dp // slack above/below the thumb so it's easy to catch
+    const val MIN_THUMB = 28f
+    const val IDLE_ALPHA = 0.32f
+    const val ACTIVE_ALPHA = 0.72f
 }
 
-/** Scrollbar for a LazyColumn (uses the average visible item size to estimate content height). */
-fun Modifier.verticalScrollbar(
-    state: LazyListState,
-    width: Dp = Sb.WIDTH,
-    color: Color = Color.Unspecified,
+private data class SbMetrics(val thumbTop: Float, val thumbHeight: Float, val dragScale: Float)
+
+fun Modifier.verticalScrollbar(state: LazyListState, width: Dp = Sb.WIDTH, color: Color = Color.Unspecified): Modifier =
+    scrollbar({ state.isScrollInProgress }, { v -> lazyListMetrics(state, v) }, { d -> state.dispatchRawDelta(d) }, width, color)
+
+fun Modifier.verticalScrollbar(state: LazyGridState, width: Dp = Sb.WIDTH, color: Color = Color.Unspecified): Modifier =
+    scrollbar({ state.isScrollInProgress }, { v -> lazyGridMetrics(state, v) }, { d -> state.dispatchRawDelta(d) }, width, color)
+
+fun Modifier.verticalScrollbar(state: ScrollState, width: Dp = Sb.WIDTH, color: Color = Color.Unspecified): Modifier =
+    scrollbar({ state.isScrollInProgress }, { v -> scrollStateMetrics(state, v) }, { d -> state.dispatchRawDelta(d) }, width, color)
+
+private fun Modifier.scrollbar(
+    scrolling: () -> Boolean,
+    metrics: (Float) -> SbMetrics?,
+    dispatch: (Float) -> Unit,
+    width: Dp,
+    color: Color
 ): Modifier = composed {
-    val barColor = if (color.isSpecified) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-    val target = if (state.isScrollInProgress) 1f else 0f
+    val barColor = if (color.isSpecified) color else MaterialTheme.colorScheme.onSurface
+    var dragging by remember { mutableStateOf(false) }
+    val target = if (scrolling() || dragging) Sb.ACTIVE_ALPHA else Sb.IDLE_ALPHA
     val alpha by animateFloatAsState(
         targetValue = target,
-        animationSpec = tween(if (target == 1f) FADE_IN_MS else FADE_OUT_MS),
+        animationSpec = tween(if (target > Sb.IDLE_ALPHA) 90 else 500),
         label = "scrollbarAlpha"
     )
-    drawWithContent {
-        drawContent()
-        if (alpha <= 0.01f) return@drawWithContent
-        val info = state.layoutInfo
-        val visible = info.visibleItemsInfo
-        val count = info.totalItemsCount
-        if (visible.isEmpty() || count == 0) return@drawWithContent
+    val density = LocalDensity.current
+    val widthPx = with(density) { width.toPx() }
+    val touchPx = with(density) { Sb.TOUCH.toPx() }
+    val grabPx = with(density) { Sb.GRAB_PAD.toPx() }
 
-        val avg = visible.sumOf { it.size }.toFloat() / visible.size
-        val viewport = info.viewportSize.height.toFloat()
-        val contentHeight = avg * count
-        if (contentHeight <= viewport) return@drawWithContent
+    this
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                // Claim on the Initial pass (before the list's own scroll) only when grabbing the thumb.
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val m = metrics(size.height.toFloat()) ?: return@awaitEachGesture
+                val onThumb = down.position.x >= size.width - touchPx &&
+                    down.position.y >= m.thumbTop - grabPx &&
+                    down.position.y <= m.thumbTop + m.thumbHeight + grabPx
+                if (!onThumb || m.dragScale <= 0f) return@awaitEachGesture
 
-        val first = visible.first()
-        val scrolled = (first.index * avg) - first.offset
-        drawThumb(scrolled, viewport, contentHeight, width.toPx(), barColor, alpha)
-    }
+                down.consume()
+                dragging = true
+                var lastY = down.position.y
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val dy = change.position.y - lastY
+                        lastY = change.position.y
+                        change.consume()
+                        if (dy != 0f) dispatch(dy * m.dragScale)
+                        if (!change.pressed) break
+                    }
+                } finally {
+                    dragging = false
+                }
+            }
+        }
+        .drawWithContent {
+            drawContent()
+            if (alpha <= 0.01f) return@drawWithContent
+            val m = metrics(size.height) ?: return@drawWithContent
+            drawRoundRect(
+                color = barColor.copy(alpha = alpha),
+                topLeft = Offset(size.width - widthPx, m.thumbTop),
+                size = Size(widthPx, m.thumbHeight),
+                cornerRadius = CornerRadius(widthPx / 2f, widthPx / 2f)
+            )
+        }
 }
 
-/** Scrollbar for a LazyVerticalGrid (estimates rows from the visible cells). */
-fun Modifier.verticalScrollbar(
-    state: LazyGridState,
-    width: Dp = Sb.WIDTH,
-    color: Color = Color.Unspecified,
-): Modifier = composed {
-    val barColor = if (color.isSpecified) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-    val target = if (state.isScrollInProgress) 1f else 0f
-    val alpha by animateFloatAsState(
-        targetValue = target,
-        animationSpec = tween(if (target == 1f) FADE_IN_MS else FADE_OUT_MS),
-        label = "scrollbarAlpha"
-    )
-    drawWithContent {
-        drawContent()
-        if (alpha <= 0.01f) return@drawWithContent
-        val info = state.layoutInfo
-        val visible = info.visibleItemsInfo
-        val count = info.totalItemsCount
-        if (visible.isEmpty() || count == 0) return@drawWithContent
-
-        val first = visible.first()
-        // Columns = number of visible cells sharing the top row's y offset.
-        val columns = visible.count { it.offset.y == first.offset.y }.coerceAtLeast(1)
-        val rowHeight = visible.first().size.height.toFloat().coerceAtLeast(1f)
-        val viewport = info.viewportSize.height.toFloat()
-        val totalRows = ceil(count / columns.toFloat())
-        val contentHeight = totalRows * rowHeight
-        if (contentHeight <= viewport) return@drawWithContent
-
-        val currentRow = first.index / columns
-        val scrolled = (currentRow * rowHeight) - first.offset.y
-        drawThumb(scrolled, viewport, contentHeight, width.toPx(), barColor, alpha)
-    }
+private fun lazyListMetrics(state: LazyListState, viewport: Float): SbMetrics? {
+    val info = state.layoutInfo
+    val visible = info.visibleItemsInfo
+    val count = info.totalItemsCount
+    if (visible.isEmpty() || count == 0) return null
+    val avg = visible.sumOf { it.size }.toFloat() / visible.size
+    val contentHeight = avg * count
+    if (contentHeight <= viewport) return null
+    val first = visible.first()
+    val scrolled = (first.index * avg) - first.offset
+    return thumb(scrolled, viewport, contentHeight)
 }
 
-/** Scrollbar for a Column/Row using verticalScroll (exact — ScrollState knows content extent). */
-fun Modifier.verticalScrollbar(
-    state: ScrollState,
-    width: Dp = Sb.WIDTH,
-    color: Color = Color.Unspecified,
-): Modifier = composed {
-    val barColor = if (color.isSpecified) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-    val target = if (state.isScrollInProgress) 1f else 0f
-    val alpha by animateFloatAsState(
-        targetValue = target,
-        animationSpec = tween(if (target == 1f) FADE_IN_MS else FADE_OUT_MS),
-        label = "scrollbarAlpha"
-    )
-    drawWithContent {
-        drawContent()
-        if (alpha <= 0.01f || state.maxValue == 0 || state.maxValue == Int.MAX_VALUE) return@drawWithContent
-        val viewport = size.height
-        val contentHeight = viewport + state.maxValue
-        val progress = state.value.toFloat() / state.maxValue
-        // Convert progress (0..1 of scroll range) into scrolled pixels of content.
-        val scrolled = progress * (contentHeight - viewport)
-        drawThumb(scrolled, viewport, contentHeight, width.toPx(), barColor, alpha)
-    }
+private fun lazyGridMetrics(state: LazyGridState, viewport: Float): SbMetrics? {
+    val info = state.layoutInfo
+    val visible = info.visibleItemsInfo
+    val count = info.totalItemsCount
+    if (visible.isEmpty() || count == 0) return null
+    val first = visible.first()
+    val columns = visible.count { it.offset.y == first.offset.y }.coerceAtLeast(1)
+    val rowHeight = first.size.height.toFloat().coerceAtLeast(1f)
+    val totalRows = ceil(count / columns.toFloat())
+    val contentHeight = totalRows * rowHeight
+    if (contentHeight <= viewport) return null
+    val currentRow = first.index / columns
+    val scrolled = (currentRow * rowHeight) - first.offset.y
+    return thumb(scrolled, viewport, contentHeight)
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawThumb(
-    scrolled: Float,
-    viewport: Float,
-    contentHeight: Float,
-    widthPx: Float,
-    color: Color,
-    alpha: Float,
-) {
-    val thumbHeight = (viewport / contentHeight * viewport).coerceAtLeast(Sb.MIN_THUMB).coerceAtMost(viewport)
+private fun scrollStateMetrics(state: ScrollState, viewport: Float): SbMetrics? {
+    if (state.maxValue == 0 || state.maxValue == Int.MAX_VALUE) return null
+    val contentHeight = viewport + state.maxValue
+    val scrolled = state.value.toFloat()
+    return thumb(scrolled, viewport, contentHeight)
+}
+
+private fun thumb(scrolled: Float, viewport: Float, contentHeight: Float): SbMetrics {
+    val thumbHeight = (viewport / contentHeight * viewport).coerceIn(Sb.MIN_THUMB, viewport)
     val maxTravel = viewport - thumbHeight
-    val fraction = (scrolled / (contentHeight - viewport)).coerceIn(0f, 1f)
-    val top = fraction * maxTravel
-    drawRoundRect(
-        color = color.copy(alpha = color.alpha * alpha),
-        topLeft = Offset(size.width - widthPx, top),
-        size = Size(widthPx, thumbHeight),
-        cornerRadius = CornerRadius(widthPx / 2f, widthPx / 2f)
-    )
+    val scrollable = contentHeight - viewport
+    val fraction = (scrolled / scrollable).coerceIn(0f, 1f)
+    val dragScale = if (maxTravel > 0f) scrollable / maxTravel else 0f
+    return SbMetrics(thumbTop = fraction * maxTravel, thumbHeight = thumbHeight, dragScale = dragScale)
 }
