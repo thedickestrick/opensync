@@ -2,6 +2,7 @@ package com.opensync.foldersync.ui.notes
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Environment
 import android.webkit.MimeTypeMap
 import android.widget.Toast
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
@@ -90,6 +92,7 @@ import com.opensync.foldersync.notes.NoteConverter
 import com.opensync.foldersync.ui.formatBytes
 import com.opensync.foldersync.ui.formatTimestamp
 import com.opensync.foldersync.update.AppPrefs
+import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -314,6 +317,29 @@ class NotesViewModel : ViewModel() {
         }
     }
 
+    /** Encrypt the selected notes into the vault and remove the originals (folders are skipped). */
+    fun moveSelectedToVault() {
+        val paths = _state.value.selection.toList().filter { !File(it).isDirectory }
+        if (paths.isEmpty()) return
+        viewModelScope.launch {
+            when {
+                !VaultManager.exists() ->
+                    _state.value = _state.value.copy(error = "Create a vault first (Vault tab).")
+                !VaultManager.isUnlocked ->
+                    _state.value = _state.value.copy(error = "Unlock the vault first (Vault tab).")
+                else -> {
+                    val error = withContext(Dispatchers.IO) {
+                        runCatching {
+                            paths.forEach { VaultManager.importFile(Uri.fromFile(File(it))) }
+                        }.exceptionOrNull()?.message
+                    }
+                    _state.value = _state.value.copy(selection = emptySet(), error = error)
+                    rescan()
+                }
+            }
+        }
+    }
+
     fun rename(path: String, newName: String) {
         val clean = newName.trim()
         if (clean.isBlank()) return
@@ -433,6 +459,7 @@ fun NotesScreen(
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showVaultConfirm by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var sortOpen by remember { mutableStateOf(false) }
 
@@ -464,6 +491,7 @@ fun NotesScreen(
                     onCut = { vm.cutSelected() },
                     onDelete = { showDeleteConfirm = true },
                     onRename = { renameTarget = state.selection.first() },
+                    onMoveToVault = { showVaultConfirm = true },
                     onSelectAll = { vm.selectAll() }
                 )
             } else if (state.searching) {
@@ -642,6 +670,17 @@ fun NotesScreen(
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
         )
     }
+    if (showVaultConfirm) {
+        AlertDialog(
+            onDismissRequest = { showVaultConfirm = false },
+            title = { Text("Move to vault?") },
+            text = { Text("${state.selection.size} note(s) will be encrypted into the vault and removed from your notes folder. (Folders are skipped.)") },
+            confirmButton = {
+                TextButton(onClick = { showVaultConfirm = false; vm.moveSelectedToVault() }) { Text("Move") }
+            },
+            dismissButton = { TextButton(onClick = { showVaultConfirm = false }) { Text("Cancel") } }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -730,6 +769,7 @@ private fun NotesSelectionBar(
     onCut: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
+    onMoveToVault: () -> Unit,
     onSelectAll: () -> Unit
 ) {
     TopAppBar(
@@ -738,18 +778,24 @@ private fun NotesSelectionBar(
         },
         title = { Text("$count selected") },
         actions = {
-            IconButton(onClick = onPin) {
-                Icon(Icons.Filled.PushPin, contentDescription = "Pin / unpin")
-            }
-            if (canRename) {
-                IconButton(onClick = onRename) {
-                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
+            // Primary actions as icons; overflow the rest so nothing gets clipped off-screen.
+            IconButton(onClick = onPin) { Icon(Icons.Filled.PushPin, contentDescription = "Pin / unpin") }
+            IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
+            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
+            Box {
+                var overflow by remember { mutableStateOf(false) }
+                IconButton(onClick = { overflow = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                    if (canRename) {
+                        DropdownMenuItem(text = { Text("Rename") }, onClick = { overflow = false; onRename() })
+                    }
+                    DropdownMenuItem(text = { Text("Copy") }, onClick = { overflow = false; onCopy() })
+                    DropdownMenuItem(text = { Text("Cut") }, onClick = { overflow = false; onCut() })
+                    DropdownMenuItem(text = { Text("Select all") }, onClick = { overflow = false; onSelectAll() })
                 }
             }
-            IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
-            IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
-            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
-            IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
         }
     )
 }
