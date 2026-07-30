@@ -105,7 +105,10 @@ class TextEditorActivity : ComponentActivity() {
             }
             true
         }.getOrDefault(false).also { ok ->
-            if (ok) com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
+            if (ok) {
+                com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
+                com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(applicationContext)
+            }
         }
     }
 }
