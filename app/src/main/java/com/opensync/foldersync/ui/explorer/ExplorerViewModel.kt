@@ -60,6 +60,10 @@ class ExplorerViewModel : ViewModel() {
     private var clipboard: Clipboard? = null
     private var pendingShares: List<SharedItem> = emptyList()
 
+    /** Remembered list scroll position, so opening a file and coming back keeps your place. */
+    var listIndex = 0
+    var listOffset = 0
+
     private val _openFile = Channel<File>(Channel.BUFFERED)
     val openFile = _openFile.receiveAsFlow()
 
