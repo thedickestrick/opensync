@@ -56,7 +56,10 @@ class MediaViewActivity : ComponentActivity() {
         enableEdgeToEdge()
         hideSystemBars()
 
+        // `media_path` lets OpenSync's own explorer open a file by path (enables folder-swipe without
+        // exposing a file:// Uri across the activity boundary). Falls back to the ACTION_VIEW data Uri.
         val data: Uri? = intent?.data
+            ?: intent?.getStringExtra("media_path")?.let { Uri.fromFile(File(it)) }
         if (data == null) { finish(); return }
 
         val (items, startIndex) = buildPlaylist(data)

@@ -98,13 +98,7 @@ fun ExplorerScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        vm.openFile.collect { file ->
-            if (file.extension.equals("pdf", ignoreCase = true)) {
-                onOpenPdf(file.absolutePath)
-            } else {
-                openWithSystem(context, file)
-            }
-        }
+        vm.openFile.collect { file -> openFile(context, file, onOpenPdf) }
     }
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -496,6 +490,41 @@ private fun iconFor(item: RemoteFile) = when {
     else -> Icons.Filled.Description
 }
 
+private val OPEN_IMAGE_EXTS =
+    setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "avif", "dng")
+private val OPEN_VIDEO_EXTS =
+    setOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "m4v", "ts", "flv", "wmv", "mpeg", "mpg")
+private val OPEN_TEXT_EXTS =
+    setOf("txt", "md", "markdown", "log", "json", "xml", "csv", "yml", "yaml", "ini", "conf", "properties")
+
+/**
+ * Opens a file tapped in OpenSync's own explorer. Types OpenSync handles (images, video, PDF, text)
+ * go straight to the built-in viewers — no "Open with" chooser, ever. Anything else is handed to the
+ * system with a plain ACTION_VIEW so Android's normal default applies (and remembers an "Always" pick).
+ */
+private fun openFile(context: android.content.Context, file: File, onOpenPdf: (String) -> Unit) {
+    val ext = file.extension.lowercase()
+    when {
+        ext == "pdf" -> onOpenPdf(file.absolutePath)
+        ext in OPEN_IMAGE_EXTS || ext in OPEN_VIDEO_EXTS ->
+            launchInternal(context, file, com.opensync.foldersync.MediaViewActivity::class.java, "media_path")
+        ext in OPEN_TEXT_EXTS ->
+            launchInternal(context, file, com.opensync.foldersync.TextEditorActivity::class.java, "note_path")
+        else -> openWithSystem(context, file)
+    }
+}
+
+/** Launch one of OpenSync's own activities by file path (no chooser, no file:// exposure). */
+private fun launchInternal(
+    context: android.content.Context, file: File, cls: Class<*>, pathExtra: String
+) {
+    try {
+        context.startActivity(Intent(context, cls).putExtra(pathExtra, file.absolutePath))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Couldn't open this file", Toast.LENGTH_SHORT).show()
+    }
+}
+
 private fun openWithSystem(context: android.content.Context, file: File) {
     try {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -505,7 +534,8 @@ private fun openWithSystem(context: android.content.Context, file: File) {
             setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "Open with"))
+        // No createChooser(): a plain ACTION_VIEW lets Android use (and remember) the user's default.
+        context.startActivity(intent)
     } catch (e: Exception) {
         Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show()
     }
