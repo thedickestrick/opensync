@@ -332,9 +332,10 @@ class GalleryViewModel : ViewModel() {
 
     /** Encrypt the selected media into the vault and remove the originals. */
     fun moveSelectedToVault() {
-        val items = selectedFiles().filter { !it.isDirectory }
-        if (items.isEmpty()) return
         val s = _state.value
+        // Media only (folders are skipped); need a backing file to encrypt.
+        val mediaItems = s.media.filter { it.key in s.selection && it.remoteFile != null }
+        if (mediaItems.isEmpty()) return
         val local = (s.source is GallerySource.Provider && s.source.location == ExplorerLocation.LocalRoot) ||
             (s.source is GallerySource.Device && s.inAlbum)
         viewModelScope.launch {
@@ -344,14 +345,14 @@ class GalleryViewModel : ViewModel() {
                 !VaultManager.isUnlocked ->
                     _state.update { it.copy(error = "Unlock the vault first (Vault tab).") }
                 else -> {
-                    val paths = items.map { absPath(it.relPath) }
+                    val paths = mediaItems.mapNotNull { it.remoteFile?.let { rf -> absPath(rf.relPath) } }
                     _state.update { it.copy(busyMessage = "Moving to vault…") }
                     val err = withContext(Dispatchers.IO) {
                         runCatching {
-                            for (item in items) {
+                            for (item in mediaItems) {
                                 val file = repo.materialize(item)
                                 VaultManager.importFile(Uri.fromFile(file))
-                                if (!local) repo.delete(listOf(item)) // also drop the remote original
+                                if (!local) item.remoteFile?.let { repo.delete(listOf(it)) } // drop remote original
                             }
                         }.exceptionOrNull()?.message
                     }
