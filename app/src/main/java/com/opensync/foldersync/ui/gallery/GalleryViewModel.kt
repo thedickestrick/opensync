@@ -219,6 +219,12 @@ class GalleryViewModel : ViewModel() {
 
     fun singleSelected(): RemoteFile? = selectedFiles().firstOrNull()
 
+    /** Absolute on-device path for [item] when browsing local folders, else null. */
+    fun localAbsolutePath(item: RemoteFile): String? {
+        val src = _state.value.source
+        return if (src is GallerySource.Provider && src.location == ExplorerLocation.LocalRoot) "/" + item.relPath else null
+    }
+
     private fun selectedFiles(): List<RemoteFile> {
         val st = _state.value
         val folders = st.folders.filter { it.relPath in st.selection }

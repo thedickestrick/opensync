@@ -29,6 +29,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import com.opensync.foldersync.gallery.isImageName
+import com.opensync.foldersync.gallery.isVideoName
+import com.opensync.foldersync.ui.common.DetailsInfo
+import com.opensync.foldersync.ui.common.FileDetailsDialog
+import com.opensync.foldersync.ui.common.fileTypeLabel
 import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -46,6 +51,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.SelectAll
@@ -86,7 +92,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
+import kotlinx.coroutines.withTimeout
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -136,6 +144,8 @@ fun GalleryScreen(
     var sortMenuOpen by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    var detailsTarget by remember { mutableStateOf<RemoteFile?>(null) }
+    var viewerDetails by remember { mutableStateOf<MediaItem?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     BackHandler(enabled = state.canBack) { vm.back() }
@@ -151,6 +161,7 @@ fun GalleryScreen(
                     onCut = vm::cutSelected,
                     onDelete = { showDeleteConfirm = true },
                     onRename = { renameTarget = vm.singleSelected() },
+                    onDetails = { detailsTarget = vm.singleSelected() },
                     onSelectAll = vm::selectAll
                 )
             } else {
@@ -266,7 +277,8 @@ fun GalleryScreen(
             items = state.media,
             startIndex = index,
             onClose = vm::closeViewer,
-            materialize = { vm.materialize(it) }
+            materialize = { vm.materialize(it) },
+            onShowDetails = { viewerDetails = it }
         )
     }
 
@@ -291,6 +303,37 @@ fun GalleryScreen(
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
         )
     }
+    detailsTarget?.let { target ->
+        FileDetailsDialog(
+            info = DetailsInfo(
+                name = target.name,
+                isDirectory = target.isDirectory,
+                typeLabel = fileTypeLabel(target.name, target.isDirectory),
+                size = target.size,
+                modified = target.modifiedTime,
+                localPath = vm.localAbsolutePath(target),
+                isImage = !target.isDirectory && isImageName(target.name),
+                isVideo = !target.isDirectory && isVideoName(target.name)
+            ),
+            onDismiss = { detailsTarget = null }
+        )
+    }
+    viewerDetails?.let { item ->
+        FileDetailsDialog(
+            info = DetailsInfo(
+                name = item.name,
+                isDirectory = false,
+                typeLabel = fileTypeLabel(item.name, false),
+                uri = item.deviceUri,
+                size = item.remoteFile?.size,
+                modified = item.remoteFile?.modifiedTime,
+                localPath = item.remoteFile?.let { vm.localAbsolutePath(it) },
+                isImage = !item.isVideo,
+                isVideo = item.isVideo
+            ),
+            onDismiss = { viewerDetails = null }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -303,6 +346,7 @@ private fun GallerySelectionBar(
     onCut: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
+    onDetails: () -> Unit,
     onSelectAll: () -> Unit
 ) {
     TopAppBar(
@@ -312,6 +356,9 @@ private fun GallerySelectionBar(
         title = { Text("$count selected") },
         actions = {
             if (canRename) {
+                IconButton(onClick = onDetails) {
+                    Icon(Icons.Filled.Info, contentDescription = "Details")
+                }
                 IconButton(onClick = onRename) {
                     Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
                 }
@@ -543,7 +590,8 @@ private fun MediaViewer(
     items: List<MediaItem>,
     startIndex: Int,
     onClose: () -> Unit,
-    materialize: suspend (MediaItem) -> File
+    materialize: suspend (MediaItem) -> File,
+    onShowDetails: (MediaItem) -> Unit = {}
 ) {
     if (items.isEmpty()) { onClose(); return }
     BackHandler(enabled = true) { onClose() }
@@ -584,7 +632,8 @@ private fun MediaViewer(
                             materialize = materialize,
                             active = active,
                             onPrev = { if (index > 0) index-- },
-                            onNext = { if (index < items.size - 1) index++ }
+                            onNext = { if (index < items.size - 1) index++ },
+                            onLongPress = { onShowDetails(item) }
                         )
                     }
                 }
@@ -599,7 +648,8 @@ private fun MediaPage(
     materialize: suspend (MediaItem) -> File,
     active: Boolean,
     onPrev: () -> Unit,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    onLongPress: () -> Unit = {}
 ) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
         value = item.deviceUri ?: runCatching { materialize(item) }.getOrNull()
@@ -607,14 +657,20 @@ private fun MediaPage(
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             model == null -> if (active) CircularProgressIndicator(color = Color.White)
-            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext)
-            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext)
+            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress)
+            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress)
         }
     }
 }
 
 @Composable
-private fun VideoPlayer(model: Any, active: Boolean = true, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
+private fun VideoPlayer(
+    model: Any,
+    active: Boolean = true,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {},
+    onLongPress: () -> Unit = {}
+) {
     val context = LocalContext.current
     val uri: Uri = when (model) {
         is Uri -> model
@@ -629,7 +685,12 @@ private fun VideoPlayer(model: Any, active: Boolean = true, onPrev: () -> Unit =
         }
     }
     DisposableEffect(uri) { onDispose { exo.release() } }
-    Box(Modifier.fillMaxSize().then(if (active) Modifier.horizontalSwipe(uri, onPrev, onNext) else Modifier)) {
+    // Long-press for details is handled without swallowing the player's tap-to-toggle controls.
+    Box(
+        Modifier.fillMaxSize()
+            .then(if (active) Modifier.horizontalSwipe(uri, onPrev, onNext) else Modifier)
+            .then(if (active) Modifier.longPressPassthrough(uri, onLongPress) else Modifier)
+    ) {
         AndroidView(
             factory = { ctx -> PlayerView(ctx).apply { player = exo } },
             modifier = Modifier.fillMaxSize()
@@ -664,8 +725,43 @@ private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () ->
         }
     }
 
+/**
+ * Fires [onLongPress] when a finger is held still past the long-press timeout, without consuming any
+ * pointer events — so a normal tap still passes through to the video player's own controls underneath.
+ */
+private fun Modifier.longPressPassthrough(key: Any, onLongPress: () -> Unit): Modifier =
+    pointerInput(key) {
+        val timeout = viewConfiguration.longPressTimeoutMillis
+        val slop = viewConfiguration.touchSlop
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var moved = 0f
+            var fired = false
+            try {
+                withTimeout(timeout) {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null || !change.pressed) return@withTimeout // lifted → tap
+                        moved += change.positionChange().getDistance()
+                        if (moved > slop) return@withTimeout // dragging → not a long-press
+                    }
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                fired = true
+            }
+            if (fired) onLongPress()
+        }
+    }
+
 @Composable
-private fun ZoomableImage(model: Any?, active: Boolean = true, onPrev: () -> Unit = {}, onNext: () -> Unit = {}) {
+private fun ZoomableImage(
+    model: Any?,
+    active: Boolean = true,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {},
+    onLongPress: () -> Unit = {}
+) {
     var scale by remember(model) { mutableStateOf(1f) }
     var offset by remember(model) { mutableStateOf(Offset.Zero) }
     val context = LocalContext.current
@@ -675,12 +771,15 @@ private fun ZoomableImage(model: Any?, active: Boolean = true, onPrev: () -> Uni
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
-            // Double-tap toggles between fit and 2.5× zoom. (Only the visible page reacts.)
+            // Double-tap toggles zoom; long-press shows details. (Only the visible page reacts.)
             .pointerInput(model, active) {
                 if (!active) return@pointerInput
-                detectTapGestures(onDoubleTap = {
-                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                })
+                detectTapGestures(
+                    onLongPress = { onLongPress() },
+                    onDoubleTap = {
+                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                    }
+                )
             }
             // Pinch/pan when zoomed; otherwise a horizontal swipe jumps to the next item instantly.
             .pointerInput(model, active) {
