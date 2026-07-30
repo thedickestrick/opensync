@@ -659,7 +659,8 @@ private fun NoteRow(
             else MaterialTheme.colorScheme.primary
         )
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            val displayName = if (entry.isDir) entry.name else entry.name.substringBeforeLast('.', entry.name)
+            Text(displayName, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyLarge)
             Text(
                 noteMeta(entry),
@@ -689,9 +690,10 @@ private fun NoteRow(
 }
 
 private fun noteMeta(entry: NoteEntry): String = buildString {
-    append(if (entry.isDir) "Folder" else kindLabel(entry.kind))
-    if (!entry.isDir) {
-        append("  •  ").append(formatTimestamp(entry.modifiedTime))
+    if (entry.isDir) {
+        append("Folder")
+    } else {
+        append(formatTimestamp(entry.modifiedTime))
         append("  •  ").append(formatBytes(entry.size))
     }
     if (entry.subDir.isNotEmpty()) append("  •  ").append(entry.subDir)
@@ -700,15 +702,6 @@ private fun noteMeta(entry: NoteEntry): String = buildString {
 private fun titleFor(state: NotesState): String {
     if (state.currentDir == state.rootDir) return "Notes"
     return File(state.currentDir).name
-}
-
-private fun kindLabel(kind: NoteKind?) = when (kind) {
-    NoteKind.PDF -> "PDF"
-    NoteKind.RAW -> "Samsung Notes"
-    NoteKind.TEXT -> "Text"
-    NoteKind.IMAGE -> "Image"
-    NoteKind.OTHER -> "Document"
-    null -> ""
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
