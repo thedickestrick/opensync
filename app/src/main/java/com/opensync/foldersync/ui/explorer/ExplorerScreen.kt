@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
@@ -105,6 +106,7 @@ fun ExplorerScreen(
     var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var detailsTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showVaultConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         vm.openFile.collect { file -> openFile(context, file, onOpenPdf) }
@@ -132,6 +134,7 @@ fun ExplorerScreen(
                     onDelete = { showDeleteConfirm = true },
                     onRename = { renameTarget = vm.singleSelected(state) },
                     onDetails = { detailsTarget = vm.singleSelected(state) },
+                    onMoveToVault = { showVaultConfirm = true },
                     onSelectAll = vm::selectAll,
                     canRename = state.selection.size == 1
                 )
@@ -257,6 +260,17 @@ fun ExplorerScreen(
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
         )
     }
+    if (showVaultConfirm) {
+        AlertDialog(
+            onDismissRequest = { showVaultConfirm = false },
+            title = { Text("Move to vault?") },
+            text = { Text("${state.selection.size} item(s) will be encrypted into the vault and removed from here. (Folders are skipped.)") },
+            confirmButton = {
+                TextButton(onClick = { showVaultConfirm = false; vm.moveSelectedToVault() }) { Text("Move") }
+            },
+            dismissButton = { TextButton(onClick = { showVaultConfirm = false }) { Text("Cancel") } }
+        )
+    }
 }
 
 private fun ExplorerViewModel.singleSelected(state: ExplorerUiState): RemoteFile? =
@@ -331,6 +345,7 @@ private fun SelectionBar(
     onDelete: () -> Unit,
     onRename: () -> Unit,
     onDetails: () -> Unit,
+    onMoveToVault: () -> Unit,
     onSelectAll: () -> Unit,
     canRename: Boolean
 ) {
@@ -350,6 +365,7 @@ private fun SelectionBar(
             }
             IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
             IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
+            IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
             IconButton(onClick = onSelectAll) { Icon(Icons.Filled.SelectAll, contentDescription = "Select all") }
         }

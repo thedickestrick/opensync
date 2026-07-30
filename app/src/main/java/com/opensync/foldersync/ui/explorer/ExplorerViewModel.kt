@@ -1,5 +1,6 @@
 package com.opensync.foldersync.ui.explorer
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
@@ -12,6 +13,8 @@ import com.opensync.foldersync.files.ShareRequest
 import com.opensync.foldersync.files.SharedItem
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.vault.VaultManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class ExplorerUiState(
@@ -221,6 +225,38 @@ class ExplorerViewModel : ViewModel() {
                 refresh()
             } catch (e: Exception) {
                 _state.update { it.copy(busyMessage = null, error = e.message ?: "Cannot delete") }
+            }
+        }
+    }
+
+    /** Encrypt the selected files into the vault and remove the originals from here. */
+    fun moveSelectedToVault() {
+        val items = selectedItems().filter { !it.isDirectory }
+        if (items.isEmpty()) return
+        val local = _state.value.location == ExplorerLocation.LocalRoot
+        viewModelScope.launch {
+            when {
+                !VaultManager.exists() ->
+                    _state.update { it.copy(error = "Create a vault first (Vault tab).") }
+                !VaultManager.isUnlocked ->
+                    _state.update { it.copy(error = "Unlock the vault first (Vault tab).") }
+                else -> {
+                    _state.update { it.copy(busyMessage = "Moving to vault…") }
+                    val err = withContext(Dispatchers.IO) {
+                        runCatching {
+                            for (item in items) {
+                                // materialize() returns the real local file, or a downloaded temp for
+                                // remote — importFile encrypts it and deletes that source.
+                                val file = repo.materialize(item)
+                                VaultManager.importFile(Uri.fromFile(file))
+                                if (!local) repo.delete(listOf(item)) // also drop the remote original
+                            }
+                        }.exceptionOrNull()?.message
+                    }
+                    clearSelection()
+                    _state.update { it.copy(busyMessage = null, error = err) }
+                    refresh()
+                }
             }
         }
     }
