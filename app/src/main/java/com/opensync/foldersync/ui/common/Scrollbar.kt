@@ -35,12 +35,12 @@ import kotlin.math.ceil
  */
 
 private object Sb {
-    val WIDTH = 5.dp
-    val TOUCH = 28.dp   // grabbable strip on the right edge
+    val WIDTH = 9.dp
+    val TOUCH = 32.dp   // grabbable strip on the right edge
     val GRAB_PAD = 10.dp // slack above/below the thumb so it's easy to catch
-    const val MIN_THUMB = 28f
-    const val IDLE_ALPHA = 0.32f
-    const val ACTIVE_ALPHA = 0.72f
+    const val MIN_THUMB = 32f
+    const val IDLE_ALPHA = 0.55f
+    const val ACTIVE_ALPHA = 0.9f
 }
 
 private data class SbMetrics(val thumbTop: Float, val thumbHeight: Float, val dragScale: Float)
