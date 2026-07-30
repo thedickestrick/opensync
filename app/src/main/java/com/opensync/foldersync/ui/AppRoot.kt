@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
@@ -58,13 +59,14 @@ import com.opensync.foldersync.ui.logs.SyncLogScreen
 import com.opensync.foldersync.ui.pairs.FolderPairEditScreen
 import com.opensync.foldersync.ui.pairs.FolderPairsScreen
 import com.opensync.foldersync.ui.settings.SettingsScreen
+import com.opensync.foldersync.ui.vault.VaultScreen
 import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.launch
 
 private data class DrawerEntry(val route: String, val label: String, val icon: ImageVector)
 
 /** Top-level destinations whose selection is remembered across app launches. */
-private val PERSISTED_ROUTES = setOf("files", "gallery", "notes", "pairs", "logs", "accounts", "settings")
+private val PERSISTED_ROUTES = setOf("files", "gallery", "notes", "vault", "pairs", "logs", "accounts", "settings")
 
 @Composable
 fun AppRoot() {
@@ -115,6 +117,12 @@ fun AppRoot() {
                 )
             }
             composable("gallery") { GalleryScreen(openDrawer = openDrawer) }
+            composable("vault") {
+                VaultScreen(
+                    openDrawer = openDrawer,
+                    onOpenPdf = { p -> PdfRequest.path = p; navController.navigate("pdf") }
+                )
+            }
             composable("notes") {
                 NotesScreen(
                     openDrawer = openDrawer,
@@ -255,6 +263,7 @@ private fun DrawerContent(currentRoute: String?, onNavigate: (String) -> Unit) {
             DrawerRow("files", "Files", Icons.Filled.Folder, currentRoute, onNavigate)
             DrawerRow("gallery", "Gallery", Icons.Filled.PhotoLibrary, currentRoute, onNavigate)
             DrawerRow("notes", "Notes", Icons.Filled.Description, currentRoute, onNavigate)
+            DrawerRow("vault", "Vault", Icons.Filled.Lock, currentRoute, onNavigate)
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionLabel("Backup")
