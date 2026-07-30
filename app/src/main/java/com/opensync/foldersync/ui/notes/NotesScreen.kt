@@ -136,6 +136,10 @@ class NotesViewModel : ViewModel() {
     private var rawEntries: List<NoteEntry> = emptyList()
     private var pinned: Set<String> = prefs.pinnedNotes
 
+    /** Remembered list scroll position, so opening a note and coming back keeps your place. */
+    var listIndex = 0
+    var listOffset = 0
+
     init {
         val root = prefs.notesDir
         _state.value = NotesState(rootDir = root, currentDir = root)
@@ -415,6 +419,16 @@ fun NotesScreen(
 ) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
+
+    // Restore scroll position from the (navigation-surviving) ViewModel; save it on the way out.
+    val notesListState = rememberLazyListState(vm.listIndex, vm.listOffset)
+    DisposableEffect(Unit) {
+        onDispose {
+            vm.listIndex = notesListState.firstVisibleItemIndex
+            vm.listOffset = notesListState.firstVisibleItemScrollOffset
+        }
+    }
+
     var showRootPicker by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<String?>(null) }
@@ -543,9 +557,10 @@ fun NotesScreen(
         Box(Modifier.padding(inner).fillMaxSize()) {
             when {
                 state.rootDir.isBlank() -> SetupCard(Modifier.align(Alignment.Center)) { showRootPicker = true }
-                state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                // Only take over the screen with a spinner on the first load — a refresh (e.g. on
+                // resume) keeps the list composed so your scroll position isn't thrown away.
+                state.loading && state.entries.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else -> {
-                  val notesListState = rememberLazyListState()
                   LazyColumn(
                     modifier = Modifier.fillMaxSize().verticalScrollbar(notesListState),
                     state = notesListState,

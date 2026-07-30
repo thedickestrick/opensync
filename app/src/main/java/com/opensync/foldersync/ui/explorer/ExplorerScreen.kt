@@ -67,6 +67,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -101,6 +102,15 @@ fun ExplorerScreen(
     val accounts by vm.accounts.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+
+    // Restore the scroll position from the (navigation-surviving) ViewModel; save it on the way out.
+    val listState = rememberLazyListState(vm.listIndex, vm.listOffset)
+    DisposableEffect(Unit) {
+        onDispose {
+            vm.listIndex = listState.firstVisibleItemIndex
+            vm.listOffset = listState.firstVisibleItemScrollOffset
+        }
+    }
 
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
@@ -197,7 +207,6 @@ fun ExplorerScreen(
                     Text("Empty folder", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                val listState = rememberLazyListState()
                 LazyColumn(Modifier.weight(1f).verticalScrollbar(listState), state = listState) {
                     items(state.entries, key = { it.relPath }) { item ->
                         ExplorerRow(
