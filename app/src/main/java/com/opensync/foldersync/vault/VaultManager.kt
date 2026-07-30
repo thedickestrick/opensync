@@ -2,6 +2,8 @@ package com.opensync.foldersync.vault
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import com.opensync.foldersync.Graph
@@ -21,6 +23,9 @@ data class VaultEntry(
     val mime: String,
     val addedAt: Long
 )
+
+/** Outcome of moving a file into the vault. [originalRemoved] is false if the source still remains. */
+data class ImportResult(val entry: VaultEntry, val originalRemoved: Boolean)
 
 /**
  * The encrypted file vault. Encrypted blobs live in the app's private internal storage (unreadable
@@ -109,8 +114,12 @@ object VaultManager {
         }.sortedByDescending { it.addedAt }
     }
 
-    /** Encrypt the file behind [uri] into the vault and record it in the index. */
-    fun importFile(uri: Uri): VaultEntry {
+    /**
+     * Move the file behind [uri] into the vault: encrypt + record it, then delete the plaintext
+     * original (the whole point of a vault). [ImportResult.originalRemoved] is false if the source
+     * couldn't be deleted, so the caller can warn the user.
+     */
+    fun importFile(uri: Uri): ImportResult {
         val key = masterKey ?: error("Vault is locked")
         blobsDir.mkdirs()
         val name = queryName(uri)
@@ -122,7 +131,48 @@ object VaultManager {
         } ?: run { blob.delete(); error("Could not read the selected file") }
         val entry = VaultEntry(id, name, size, mime, System.currentTimeMillis())
         saveIndex(listEntries() + entry)
-        return entry
+        // Only delete the original after the encrypted copy is safely stored above.
+        val removed = runCatching { deleteOriginal(uri) }.getOrDefault(false)
+        return ImportResult(entry, removed)
+    }
+
+    /** Delete the source file a picked [uri] points at. Uses the real path when we can find it. */
+    private fun deleteOriginal(uri: Uri): Boolean {
+        if (uri.scheme == "file") return uri.path?.let { File(it).delete() } ?: false
+        resolveFsPath(uri)?.let { path ->
+            val f = File(path)
+            if (f.exists() && f.delete()) return true
+        }
+        // Last resort: ask the document provider to delete it (needs a write grant on the document).
+        return runCatching { DocumentsContract.deleteDocument(ctx.contentResolver, uri) }.getOrDefault(false)
+    }
+
+    /** Best-effort resolve of a content [uri] to an on-disk path (we hold All-Files access). */
+    private fun resolveFsPath(uri: Uri): String? {
+        runCatching {
+            if (DocumentsContract.isDocumentUri(ctx, uri)) {
+                val docId = DocumentsContract.getDocumentId(uri)
+                val split = docId.split(":", limit = 2)
+                if (split.size == 2) {
+                    val (type, rel) = split
+                    // Some providers hand back an absolute path directly (e.g. "raw:/storage/…").
+                    if (rel.startsWith("/") && File(rel).exists()) return rel
+                    if (type.equals("primary", ignoreCase = true)) {
+                        return Environment.getExternalStorageDirectory().absolutePath + "/" + rel
+                    }
+                    if (File("/storage/$type").exists()) return "/storage/$type/$rel"
+                }
+            }
+        }
+        // MediaStore-style _data column.
+        return runCatching {
+            ctx.contentResolver.query(uri, arrayOf("_data"), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val i = c.getColumnIndex("_data")
+                    if (i >= 0 && !c.isNull(i)) c.getString(i) else null
+                } else null
+            }
+        }.getOrNull()
     }
 
     /** Decrypt an entry straight to a caller-provided stream (e.g. an export target). */
