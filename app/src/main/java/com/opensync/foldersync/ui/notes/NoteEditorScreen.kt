@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.FormatBold
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -76,6 +78,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var showFind by remember { mutableStateOf(false) }
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
 
@@ -173,6 +176,16 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         commit(body.copy(text = body.text.replace(findText, replaceText, ignoreCase = true)))
     }
 
+    fun deleteNote() {
+        val file = existing ?: return
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { file.delete() } }
+            com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
+            com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
+            onBack()
+        }
+    }
+
     fun save() {
         val targetDir = existing?.parentFile ?: dir?.let { File(it) }
         if (targetDir == null) {
@@ -220,6 +233,11 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     }
                 },
                 actions = {
+                    if (existing != null) {
+                        IconButton(onClick = { showDeleteConfirm = true }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Delete note")
+                        }
+                    }
                     if (!preview) {
                         IconButton(onClick = { showFind = !showFind }) {
                             Icon(Icons.Filled.FindReplace, contentDescription = "Find & replace")
@@ -293,6 +311,18 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                 )
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete note?") },
+            text = { Text("This note will be permanently deleted.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirm = false; deleteNote() }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
+        )
     }
 }
 
