@@ -168,6 +168,7 @@ class NotesViewModel : ViewModel() {
             rawEntries = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
             pushSorted()
             com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(Graph.appContext)
+            com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(Graph.appContext)
         }
     }
 

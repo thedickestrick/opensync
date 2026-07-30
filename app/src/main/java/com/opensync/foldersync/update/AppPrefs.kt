@@ -29,11 +29,24 @@ class AppPrefs(context: Context) {
         get() = prefs.getString(KEY_LAST_ROUTE, "") ?: ""
         set(value) { prefs.edit().putString(KEY_LAST_ROUTE, value).apply() }
 
+    /** Note path a single-note home-screen widget (keyed by its appWidgetId) is pinned to. */
+    fun singleNoteWidgetPath(widgetId: Int): String =
+        prefs.getString(KEY_SINGLE_NOTE_WIDGET + widgetId, "") ?: ""
+
+    fun setSingleNoteWidgetPath(widgetId: Int, path: String) {
+        prefs.edit().putString(KEY_SINGLE_NOTE_WIDGET + widgetId, path).apply()
+    }
+
+    fun removeSingleNoteWidget(widgetId: Int) {
+        prefs.edit().remove(KEY_SINGLE_NOTE_WIDGET + widgetId).apply()
+    }
+
     private companion object {
         const val KEY_OWNER = "update_owner"
         const val KEY_REPO = "update_repo"
         const val KEY_NOTES_DIR = "notes_dir"
         const val KEY_PINNED = "pinned_notes"
         const val KEY_LAST_ROUTE = "last_route"
+        const val KEY_SINGLE_NOTE_WIDGET = "single_note_widget_"
     }
 }
