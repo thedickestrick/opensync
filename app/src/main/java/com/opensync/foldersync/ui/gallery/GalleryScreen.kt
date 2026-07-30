@@ -470,7 +470,7 @@ private fun AlbumGrid(albums: List<Album>, bottomInset: Dp, onOpen: (Album) -> U
         modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
         contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 8.dp + bottomInset)
     ) {
-        items(albums, key = { it.id }) { album ->
+        items(albums, key = { it.id }, contentType = { "album" }) { album ->
             Column(Modifier.padding(6.dp).clickable { onOpen(album) }) {
                 ThumbBox(model = album.coverModel, isVideo = false)
                 Text(album.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -507,7 +507,7 @@ private fun MediaGrid(
         modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
         contentPadding = PaddingValues(start = 6.dp, top = 6.dp, end = 6.dp, bottom = 6.dp + bottomInset)
     ) {
-        items(folders, key = { "f:${it.relPath}" }) { folder ->
+        items(folders, key = { "f:${it.relPath}" }, contentType = { "folder" }) { folder ->
             val selected = folder.relPath in selection
             Column(
                 Modifier.padding(6.dp).combinedClickable(
@@ -529,7 +529,7 @@ private fun MediaGrid(
                     style = MaterialTheme.typography.labelMedium)
             }
         }
-        itemsIndexed(media, key = { _, m -> "m:${m.key}" }) { index, item ->
+        itemsIndexed(media, key = { _, m -> "m:${m.key}" }, contentType = { _, _ -> "media" }) { index, item ->
             val selected = item.remoteFile?.let { it.relPath in selection } ?: false
             Box(
                 Modifier.padding(3.dp).combinedClickable(
@@ -559,14 +559,22 @@ private fun BoxScope.SelectionCheck() {
 
 @Composable
 private fun ThumbBox(model: Any?, isVideo: Boolean) {
+    val context = LocalContext.current
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
         if (model != null) {
-            AsyncImage(model = model, contentDescription = null,
-                contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            // Decode to a small thumbnail (not the full 12MP image) so the grid loads and scrolls fast.
+            AsyncImage(
+                model = remember(model) {
+                    ImageRequest.Builder(context).data(model).size(384).crossfade(false).build()
+                },
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
         } else {
             Icon(Icons.Filled.Image, contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant)
