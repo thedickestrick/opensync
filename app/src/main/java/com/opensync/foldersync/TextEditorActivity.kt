@@ -64,11 +64,16 @@ class TextEditorActivity : ComponentActivity() {
             ?: intent?.getStringExtra("note_path")?.let { Uri.fromFile(java.io.File(it)) }
         if (uri == null) { finish(); return }
         val name = displayName(uri)
+        // Notes open rendered (view) first; plain data files (.json/.csv/…) open in edit.
+        val startInPreview = name.lowercase().let {
+            it.endsWith(".md") || it.endsWith(".markdown") || it.endsWith(".txt")
+        }
         setContent {
             OpenSyncTheme {
                 Surface(Modifier.fillMaxSize()) {
                     TextEditorScreen(
                         title = name,
+                        initialPreview = startInPreview,
                         read = { readText(uri) },
                         save = { text -> writeText(uri, text) },
                         onBack = { finish() }
@@ -119,13 +124,14 @@ private fun TextEditorScreen(
     title: String,
     read: suspend () -> String,
     save: suspend (String) -> Boolean,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    initialPreview: Boolean = false
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var body by remember { mutableStateOf(TextFieldValue("")) }
     var loaded by remember { mutableStateOf(false) }
-    var preview by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf(initialPreview) }
     var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -160,7 +166,10 @@ private fun TextEditorScreen(
             l.startsWith("- [X] ") -> l.replaceFirst("- [X] ", "- [ ] ")
             else -> l
         }
-        body = body.copy(text = lines.joinToString("\n"))
+        val newText = lines.joinToString("\n")
+        body = body.copy(text = newText)
+        // Checking a box in view mode should stick immediately.
+        if (preview) scope.launch { save(newText) }
     }
 
     Scaffold(
