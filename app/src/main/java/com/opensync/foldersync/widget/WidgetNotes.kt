@@ -26,6 +26,10 @@ internal object WidgetNotes {
         }.getOrDefault(emptyList())
     }
 
+    // Checklist markers rendered as real checkbox glyphs so the widget shows ☐ / ☑, not "- [ ]".
+    private const val UNCHECKED = "☐ " // ☐
+    private const val CHECKED = "☑ "    // ☑
+
     /** Short one-line-ish preview for list rows. */
     fun snippet(file: File, max: Int = 160): String {
         val raw = runCatching {
@@ -36,7 +40,7 @@ internal object WidgetNotes {
             }
         }.getOrDefault("")
         return raw.lineSequence()
-            .map { it.trim().trimStart('#', '>', '-', '*', ' ') }
+            .map { cleanLine(it, bullet = "") }
             .filter { it.isNotEmpty() }
             .joinToString("  ")
             .take(max)
@@ -46,13 +50,19 @@ internal object WidgetNotes {
     fun body(file: File, max: Int = 2000): String {
         val raw = runCatching { file.bufferedReader().use { it.readText() } }.getOrDefault("")
         return raw.lineSequence()
-            .joinToString("\n") { line ->
-                line.replace(Regex("^#{1,6}\\s+"), "")
-                    .replace(Regex("^\\s*[-*]\\s+"), "• ")
-                    .replace("**", "")
-                    .replace("__", "")
-            }
+            .joinToString("\n") { cleanLine(it, bullet = "• ") } // • bullets
             .trim()
             .take(max)
+    }
+
+    /** Strip a line's markdown markers for display; checklist items become ☐ / ☑. */
+    private fun cleanLine(line: String, bullet: String): String {
+        val t = line.trim()
+        return when {
+            t.startsWith("- [ ]") -> UNCHECKED + t.removePrefix("- [ ]").trim()
+            t.startsWith("- [x]") || t.startsWith("- [X]") -> CHECKED + t.substring(5).trim()
+            t.startsWith("- ") || t.startsWith("* ") -> bullet + t.substring(2).trim()
+            else -> t.trimStart('#', '>', ' ')
+        }.replace("**", "").replace("__", "")
     }
 }
