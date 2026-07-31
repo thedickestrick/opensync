@@ -84,6 +84,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +97,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -134,6 +137,7 @@ fun GalleryScreen(
     val accounts by vm.accounts.collectAsState()
     val thumbs by vm.remoteThumbs.collectAsState()
     val context = LocalContext.current
+    val editScope = rememberCoroutineScope()
 
     var hasMedia by remember { mutableStateOf(PermissionUtil.hasMediaAccess(context)) }
     val permLauncher = rememberLauncherForActivityResult(
@@ -166,6 +170,24 @@ fun GalleryScreen(
                     onRename = { renameTarget = vm.singleSelected() },
                     onDetails = { detailsTarget = vm.singleSelected() },
                     onMoveToVault = { showVaultConfirm = true },
+                    onEdit = {
+                        val item = vm.singleSelectedMediaItem()
+                        when {
+                            item == null -> {}
+                            item.isVideo -> android.widget.Toast.makeText(context, "Only photos can be edited", android.widget.Toast.LENGTH_SHORT).show()
+                            else -> editScope.launch {
+                                val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
+                                if (f != null) {
+                                    context.startActivity(
+                                        android.content.Intent(context, com.opensync.foldersync.PhotoEditorActivity::class.java)
+                                            .putExtra("edit_path", f.absolutePath)
+                                    )
+                                } else {
+                                    android.widget.Toast.makeText(context, "Couldn't open this photo", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
                     onSelectAll = vm::selectAll
                 )
             } else {
@@ -363,6 +385,7 @@ private fun GallerySelectionBar(
     onRename: () -> Unit,
     onDetails: () -> Unit,
     onMoveToVault: () -> Unit,
+    onEdit: () -> Unit,
     onSelectAll: () -> Unit
 ) {
     TopAppBar(
@@ -383,6 +406,7 @@ private fun GallerySelectionBar(
                 }
                 DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
                     if (canRename) {
+                        DropdownMenuItem(text = { Text("Edit photo") }, onClick = { overflow = false; onEdit() })
                         DropdownMenuItem(text = { Text("Details") }, onClick = { overflow = false; onDetails() })
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { overflow = false; onRename() })
                     }

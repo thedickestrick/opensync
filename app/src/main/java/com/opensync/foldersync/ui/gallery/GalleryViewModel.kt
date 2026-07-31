@@ -260,6 +260,12 @@ class GalleryViewModel : ViewModel() {
 
     fun singleSelected(): RemoteFile? = selectedFiles().firstOrNull()
 
+    /** The single selected media item (for opening in the photo editor). */
+    fun singleSelectedMediaItem(): MediaItem? {
+        val s = _state.value
+        return s.media.firstOrNull { it.key in s.selection }
+    }
+
     /** Absolute on-device path for [item] when browsing local folders / a device album, else null. */
     fun localAbsolutePath(item: RemoteFile): String? {
         val s = _state.value
