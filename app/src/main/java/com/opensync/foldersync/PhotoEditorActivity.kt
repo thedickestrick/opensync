@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -258,7 +259,8 @@ private fun PhotoEditorScreen(uri: Uri, onClose: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF101013))) {
+    // background before systemBarsPadding: dark fills behind the bars, content is inset off them.
+    Column(Modifier.fillMaxSize().background(Color(0xFF101013)).systemBarsPadding()) {
         // Top bar
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
