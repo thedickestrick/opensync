@@ -64,10 +64,10 @@ class TextEditorActivity : ComponentActivity() {
             ?: intent?.getStringExtra("note_path")?.let { Uri.fromFile(java.io.File(it)) }
         if (uri == null) { finish(); return }
         val name = displayName(uri)
-        // Notes open rendered (view) first; plain data files (.json/.csv/…) open in edit.
-        val startInPreview = name.lowercase().let {
-            it.endsWith(".md") || it.endsWith(".markdown") || it.endsWith(".txt")
-        }
+        // The widgets explicitly request view mode; otherwise notes (.md/.txt) open rendered and plain
+        // data files (.json/.csv/…) open in edit.
+        val startInPreview = intent?.getBooleanExtra("view_mode", false) == true ||
+            name.lowercase().let { it.endsWith(".md") || it.endsWith(".markdown") || it.endsWith(".txt") }
         setContent {
             OpenSyncTheme {
                 Surface(Modifier.fillMaxSize()) {

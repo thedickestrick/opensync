@@ -47,6 +47,7 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
                     context, id,
                     Intent(context, TextEditorActivity::class.java)
                         .putExtra("note_path", path)
+                        .putExtra("view_mode", true) // open rendered so checkboxes are tappable
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )

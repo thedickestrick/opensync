@@ -19,14 +19,13 @@ class NotesWidgetProvider : AppWidgetProvider() {
     }
 
     companion object {
-        /** Ask all placed widgets to reload their list (call after notes change). */
+        /** Rebuild all placed widgets (refreshes their list + tap targets) after notes change. */
         fun notifyChanged(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(
                 android.content.ComponentName(context, NotesWidgetProvider::class.java)
             )
-            if (ids.isEmpty()) return
-            manager.notifyAppWidgetViewDataChanged(ids, R.id.widget_list)
+            for (id in ids) updateWidget(context, manager, id)
         }
 
         private fun updateWidget(context: Context, manager: AppWidgetManager, id: Int) {
@@ -53,7 +52,9 @@ class NotesWidgetProvider : AppWidgetProvider() {
             // Tapping a note opens it in the text editor (the item supplies note_path via fill-in intent).
             val itemTemplate = PendingIntent.getActivity(
                 context, 0,
-                Intent(context, TextEditorActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                Intent(context, TextEditorActivity::class.java)
+                    .putExtra("view_mode", true) // open rendered so checkboxes are tappable
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
             views.setPendingIntentTemplate(R.id.widget_list, itemTemplate)
