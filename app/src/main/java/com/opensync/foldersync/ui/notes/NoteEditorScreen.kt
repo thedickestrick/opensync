@@ -72,6 +72,10 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
 
     val existing = remember(path) { path?.let { File(it) } }
     val baseDir = remember(path, dir) { existing?.parentFile ?: dir?.let { File(it) } }
+    // WYSIWYG: render Markdown as rich text while editing (markers hidden).
+    val codeBg = MaterialTheme.colorScheme.surfaceVariant
+    val quoteColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val mdTransform = remember(codeBg, quoteColor) { MarkdownVisualTransformation(codeBg, quoteColor) }
     var title by remember { mutableStateOf(existing?.nameWithoutExtension ?: "") }
     var body by remember { mutableStateOf(TextFieldValue("")) }
     var loaded by remember { mutableStateOf(existing == null) }
@@ -341,7 +345,8 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                 OutlinedTextField(
                     value = body,
                     onValueChange = { commit(it) },
-                    label = { Text("Write your note…  (Markdown supported)") },
+                    label = { Text("Write your note…") },
+                    visualTransformation = mdTransform,
                     modifier = Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)
                 )
             }
