@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.Clipboard
+import com.opensync.foldersync.files.SharedClipboard
 import com.opensync.foldersync.files.DEFAULT_LOCAL_DIR
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.gallery.Album
@@ -79,19 +80,22 @@ class GalleryViewModel : ViewModel() {
 
     init {
         loadDeviceAlbums()
+        // Keep the paste bar in sync with the shared clipboard (copies from here or the Files tab).
+        viewModelScope.launch {
+            SharedClipboard.flow.collect { c -> _state.update { it.copy(hasClipboard = c != null) } }
+        }
     }
 
     fun setSource(source: GallerySource, label: String) {
         viewModelScope.launch {
             thumbJob?.cancel()
             _remoteThumbs.value = emptyMap()
-            clipboard = null
             _state.update {
                 it.copy(
                     source = source, sourceLabel = label, error = null, inAlbum = false,
                     albums = emptyList(), folders = emptyList(), media = emptyList(),
                     relDir = "", viewerIndex = null, selection = emptySet(),
-                    hasClipboard = false, albumBaseDir = null
+                    hasClipboard = SharedClipboard.clip != null, albumBaseDir = null
                 )
             }
             when (source) {
@@ -243,7 +247,6 @@ class GalleryViewModel : ViewModel() {
 
     // ---- File controls (folder-based sources) ----
 
-    private var clipboard: Clipboard? = null
 
     fun toggleSelect(key: String) = _state.update {
         val s = it.selection.toMutableSet()
@@ -320,23 +323,22 @@ class GalleryViewModel : ViewModel() {
 
     fun copySelected() {
         if (!_state.value.browsingFiles) return
-        clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = false)
-        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+        SharedClipboard.clip = Clipboard(repo.providerLocation, selectedFiles(), move = false)
+        _state.update { it.copy(selection = emptySet()) }
     }
 
     fun cutSelected() {
         if (!_state.value.browsingFiles) return
-        clipboard = Clipboard(repo.providerLocation, selectedFiles(), move = true)
-        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+        SharedClipboard.clip = Clipboard(repo.providerLocation, selectedFiles(), move = true)
+        _state.update { it.copy(selection = emptySet()) }
     }
 
     fun clearClipboard() {
-        clipboard = null
-        _state.update { it.copy(hasClipboard = false) }
+        SharedClipboard.clip = null
     }
 
     fun paste() {
-        val clip = clipboard ?: return
+        val clip = SharedClipboard.clip ?: return
         viewModelScope.launch {
             val dest = _state.value.relDir
             _state.update { it.copy(busyMessage = "Preparing…") }
@@ -346,8 +348,8 @@ class GalleryViewModel : ViewModel() {
                     { name -> _state.update { it.copy(busyMessage = "Copying $name") } },
                     { false }
                 )
-                if (clip.move) clipboard = null
-                _state.update { it.copy(busyMessage = null, hasClipboard = clipboard != null) }
+                if (clip.move) SharedClipboard.clip = null
+                _state.update { it.copy(busyMessage = null) }
                 val changed = clip.items.map { absJoin(dest, it.name) } +
                     if (clip.move) clip.items.map { absPath(it.relPath) } else emptyList()
                 refreshAfterOp(changed)

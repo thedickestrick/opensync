@@ -18,8 +18,10 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -44,6 +46,7 @@ import com.opensync.foldersync.ui.common.fileTypeLabel
 import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed as rowItemsIndexed
@@ -98,6 +101,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -267,7 +271,7 @@ fun GalleryScreen(
                 Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
             }
 
-            if (state.hasClipboard) {
+            if (state.hasClipboard && state.browsingFiles) {
                 GalleryActionBar(
                     text = "Clipboard ready",
                     confirmLabel = "Paste here",
@@ -679,6 +683,14 @@ private fun EmptyBox(text: String) {
     }
 }
 
+/** Index of the filmstrip tile whose centre is closest to the viewport centre. */
+private fun centeredStripIndex(state: LazyListState): Int {
+    val info = state.layoutInfo
+    if (info.visibleItemsInfo.isEmpty()) return 0
+    val center = (info.viewportStartOffset + info.viewportEndOffset) / 2
+    return info.visibleItemsInfo.minByOrNull { abs((it.offset + it.size / 2) - center) }!!.index
+}
+
 @Composable
 private fun MediaViewer(
     items: List<MediaItem>,
@@ -772,7 +784,8 @@ private fun MediaViewer(
                 }
             }
 
-            // Bottom thumbnail strip of this album; tap a tile to jump to it.
+            // Bottom thumbnail strip of this album: scroll it to select (the centered tile is current),
+            // or tap a tile to jump to it.
             AnimatedVisibility(
                 visible = chrome,
                 enter = fadeIn(),
@@ -780,36 +793,56 @@ private fun MediaViewer(
                 modifier = Modifier.align(Alignment.BottomCenter).zIndex(2f)
             ) {
                 val stripState = rememberLazyListState()
-                LaunchedEffect(index, chrome) { if (chrome) runCatching { stripState.animateScrollToItem(index) } }
-                LazyRow(
-                    Modifier.fillMaxWidth().background(Color(0xB3000000)).navigationBarsPadding().padding(vertical = 8.dp),
-                    state = stripState,
-                    contentPadding = PaddingValues(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                val dragged by stripState.interactionSource.collectIsDraggedAsState()
+                var userScrolling by remember { mutableStateOf(false) }
+                LaunchedEffect(dragged, stripState.isScrollInProgress) {
+                    if (dragged) userScrolling = true
+                    else if (!stripState.isScrollInProgress) userScrolling = false
+                }
+                // While the user drives the strip, the tile under the centre becomes the current photo.
+                LaunchedEffect(stripState) {
+                    snapshotFlow { centeredStripIndex(stripState) }.collect { c ->
+                        if (userScrolling && c in items.indices && c != index) index = c
+                    }
+                }
+                // When idle (after a swipe or once a scrub settles), snap the current photo to the centre.
+                LaunchedEffect(index, userScrolling) { if (!userScrolling) runCatching { stripState.animateScrollToItem(index) } }
+
+                BoxWithConstraints(
+                    Modifier.fillMaxWidth().background(Color(0xB3000000)).navigationBarsPadding()
                 ) {
-                    rowItemsIndexed(items, key = { _, m -> "v:${m.key}" }) { i, m ->
-                        Box(
-                            Modifier.size(54.dp).clip(RoundedCornerShape(6.dp))
-                                .border(
-                                    if (i == index) 2.dp else 0.dp,
-                                    if (i == index) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
+                    val tile = 54.dp
+                    val sidePad = (maxWidth - tile) / 2 // so the first/last tiles can reach the centre
+                    LazyRow(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        state = stripState,
+                        contentPadding = PaddingValues(horizontal = sidePad),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        rowItemsIndexed(items, key = { _, m -> "v:${m.key}" }) { i, m ->
+                            Box(
+                                Modifier.size(tile).clip(RoundedCornerShape(6.dp))
+                                    .border(
+                                        if (i == index) 2.dp else 0.dp,
+                                        if (i == index) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .background(Color(0xFF2A2A30))
+                                    .clickable { index = i }
+                            ) {
+                                AsyncImage(
+                                    model = remember(m.key) {
+                                        ImageRequest.Builder(context).data(m.thumbModel ?: m.deviceUri).size(160).crossfade(false).build()
+                                    },
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
                                 )
-                                .background(Color(0xFF2A2A30))
-                                .clickable { index = i }
-                        ) {
-                            AsyncImage(
-                                model = remember(m.key) {
-                                    ImageRequest.Builder(context).data(m.thumbModel ?: m.deviceUri).size(160).crossfade(false).build()
-                                },
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            if (m.isVideo) Icon(
-                                Icons.Filled.PlayCircle, null, tint = Color.White,
-                                modifier = Modifier.align(Alignment.Center).size(18.dp)
-                            )
+                                if (m.isVideo) Icon(
+                                    Icons.Filled.PlayCircle, null, tint = Color.White,
+                                    modifier = Modifier.align(Alignment.Center).size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
