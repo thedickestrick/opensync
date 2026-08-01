@@ -5,8 +5,12 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -19,13 +23,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -37,6 +44,9 @@ import com.opensync.foldersync.ui.common.fileTypeLabel
 import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed as rowItemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -49,6 +59,7 @@ import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
@@ -152,8 +163,28 @@ fun GalleryScreen(
     var renameTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var detailsTarget by remember { mutableStateOf<RemoteFile?>(null) }
     var viewerDetails by remember { mutableStateOf<MediaItem?>(null) }
+    var viewerDeleteItem by remember { mutableStateOf<MediaItem?>(null) }
+    var viewerVaultItem by remember { mutableStateOf<MediaItem?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showVaultConfirm by remember { mutableStateOf(false) }
+
+    fun launchEditor(item: MediaItem) {
+        if (item.isVideo) {
+            android.widget.Toast.makeText(context, "Only photos can be edited", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        editScope.launch {
+            val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
+            if (f != null) {
+                context.startActivity(
+                    android.content.Intent(context, com.opensync.foldersync.PhotoEditorActivity::class.java)
+                        .putExtra("edit_path", f.absolutePath)
+                )
+            } else {
+                android.widget.Toast.makeText(context, "Couldn't open this photo", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     BackHandler(enabled = state.canBack) { vm.back() }
 
@@ -170,24 +201,7 @@ fun GalleryScreen(
                     onRename = { renameTarget = vm.singleSelected() },
                     onDetails = { detailsTarget = vm.singleSelected() },
                     onMoveToVault = { showVaultConfirm = true },
-                    onEdit = {
-                        val item = vm.singleSelectedMediaItem()
-                        when {
-                            item == null -> {}
-                            item.isVideo -> android.widget.Toast.makeText(context, "Only photos can be edited", android.widget.Toast.LENGTH_SHORT).show()
-                            else -> editScope.launch {
-                                val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
-                                if (f != null) {
-                                    context.startActivity(
-                                        android.content.Intent(context, com.opensync.foldersync.PhotoEditorActivity::class.java)
-                                            .putExtra("edit_path", f.absolutePath)
-                                    )
-                                } else {
-                                    android.widget.Toast.makeText(context, "Couldn't open this photo", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    },
+                    onEdit = { vm.singleSelectedMediaItem()?.let { launchEditor(it) } },
                     onSelectAll = vm::selectAll
                 )
             } else {
@@ -304,7 +318,10 @@ fun GalleryScreen(
             startIndex = index,
             onClose = vm::closeViewer,
             materialize = { vm.materialize(it) },
-            onShowDetails = { viewerDetails = it }
+            onShowDetails = { viewerDetails = it },
+            onDelete = { viewerDeleteItem = it },
+            onEdit = { launchEditor(it) },
+            onVault = { viewerVaultItem = it }
         )
     }
 
@@ -369,6 +386,28 @@ fun GalleryScreen(
                 isVideo = item.isVideo
             ),
             onDismiss = { viewerDetails = null }
+        )
+    }
+    viewerDeleteItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { viewerDeleteItem = null },
+            title = { Text("Delete this ${if (item.isVideo) "video" else "photo"}?") },
+            text = { Text("This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteViewerItem(item); viewerDeleteItem = null }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { viewerDeleteItem = null }) { Text("Cancel") } }
+        )
+    }
+    viewerVaultItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { viewerVaultItem = null },
+            title = { Text("Move to vault?") },
+            text = { Text("This ${if (item.isVideo) "video" else "photo"} will be encrypted into the vault and removed from here.") },
+            confirmButton = {
+                TextButton(onClick = { vm.vaultViewerItem(item); viewerVaultItem = null }) { Text("Move") }
+            },
+            dismissButton = { TextButton(onClick = { viewerVaultItem = null }) { Text("Cancel") } }
         )
     }
 }
@@ -645,11 +684,18 @@ private fun MediaViewer(
     startIndex: Int,
     onClose: () -> Unit,
     materialize: suspend (MediaItem) -> File,
-    onShowDetails: (MediaItem) -> Unit = {}
+    onShowDetails: (MediaItem) -> Unit = {},
+    onDelete: (MediaItem) -> Unit = {},
+    onEdit: (MediaItem) -> Unit = {},
+    onVault: (MediaItem) -> Unit = {}
 ) {
     if (items.isEmpty()) { onClose(); return }
     BackHandler(enabled = true) { onClose() }
-    var index by remember { mutableStateOf(startIndex.coerceIn(0, items.size - 1)) }
+    var index by remember { mutableStateOf(startIndex.coerceIn(0, items.lastIndex)) }
+    var chrome by remember { mutableStateOf(false) }
+    LaunchedEffect(items.size) { if (index > items.lastIndex) index = items.lastIndex.coerceAtLeast(0) }
+    val current = items.getOrNull(index)
+    val context = LocalContext.current
 
     // Immersive + suppress the nav-drawer edge swipe while the viewer is open.
     val view = LocalView.current
@@ -663,6 +709,12 @@ private fun MediaViewer(
             FullscreenState.active.value = false
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
+    }
+    // Show the system bars while the chrome is up so the action row clears the status bar.
+    LaunchedEffect(chrome) {
+        val controller = (view.context as? Activity)?.window?.let { WindowInsetsControllerCompat(it, it.decorView) }
+        if (chrome) controller?.show(WindowInsetsCompat.Type.systemBars())
+        else controller?.hide(WindowInsetsCompat.Type.systemBars())
     }
 
     Surface(Modifier.fillMaxSize(), color = Color.Black) {
@@ -686,9 +738,78 @@ private fun MediaViewer(
                             materialize = materialize,
                             active = active,
                             onPrev = { if (index > 0) index-- },
-                            onNext = { if (index < items.size - 1) index++ },
-                            onLongPress = { onShowDetails(item) }
+                            onNext = { if (index < items.lastIndex) index++ },
+                            onLongPress = { onShowDetails(item) },
+                            onTap = { chrome = !chrome }
                         )
+                    }
+                }
+            }
+
+            // Top action bar (tap the photo to toggle).
+            AnimatedVisibility(
+                visible = chrome,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter).zIndex(2f)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().background(Color(0xB3000000)).statusBarsPadding()
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close", tint = Color.White)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    current?.let { c ->
+                        if (!c.isVideo) IconButton(onClick = { onEdit(c) }) { Icon(Icons.Filled.Edit, "Edit", tint = Color.White) }
+                        IconButton(onClick = { onShowDetails(c) }) { Icon(Icons.Filled.Info, "Details", tint = Color.White) }
+                        IconButton(onClick = { onVault(c) }) { Icon(Icons.Filled.Lock, "Move to vault", tint = Color.White) }
+                        IconButton(onClick = { onDelete(c) }) { Icon(Icons.Filled.Delete, "Delete", tint = Color.White) }
+                    }
+                }
+            }
+
+            // Bottom thumbnail strip of this album; tap a tile to jump to it.
+            AnimatedVisibility(
+                visible = chrome,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter).zIndex(2f)
+            ) {
+                val stripState = rememberLazyListState()
+                LaunchedEffect(index, chrome) { if (chrome) runCatching { stripState.animateScrollToItem(index) } }
+                LazyRow(
+                    Modifier.fillMaxWidth().background(Color(0xB3000000)).navigationBarsPadding().padding(vertical = 8.dp),
+                    state = stripState,
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    rowItemsIndexed(items, key = { _, m -> "v:${m.key}" }) { i, m ->
+                        Box(
+                            Modifier.size(54.dp).clip(RoundedCornerShape(6.dp))
+                                .border(
+                                    if (i == index) 2.dp else 0.dp,
+                                    if (i == index) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .background(Color(0xFF2A2A30))
+                                .clickable { index = i }
+                        ) {
+                            AsyncImage(
+                                model = remember(m.key) {
+                                    ImageRequest.Builder(context).data(m.thumbModel ?: m.deviceUri).size(160).crossfade(false).build()
+                                },
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            if (m.isVideo) Icon(
+                                Icons.Filled.PlayCircle, null, tint = Color.White,
+                                modifier = Modifier.align(Alignment.Center).size(18.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -703,7 +824,8 @@ private fun MediaPage(
     active: Boolean,
     onPrev: () -> Unit,
     onNext: () -> Unit,
-    onLongPress: () -> Unit = {}
+    onLongPress: () -> Unit = {},
+    onTap: () -> Unit = {}
 ) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
         value = item.deviceUri ?: runCatching { materialize(item) }.getOrNull()
@@ -712,7 +834,7 @@ private fun MediaPage(
         when {
             model == null -> if (active) CircularProgressIndicator(color = Color.White)
             item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress)
-            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress)
+            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap)
         }
     }
 }
@@ -814,7 +936,8 @@ private fun ZoomableImage(
     active: Boolean = true,
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
-    onLongPress: () -> Unit = {}
+    onLongPress: () -> Unit = {},
+    onTap: () -> Unit = {}
 ) {
     var scale by remember(model) { mutableStateOf(1f) }
     var offset by remember(model) { mutableStateOf(Offset.Zero) }
@@ -825,10 +948,11 @@ private fun ZoomableImage(
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
-            // Double-tap toggles zoom; long-press shows details. (Only the visible page reacts.)
+            // Tap toggles the viewer chrome; double-tap zooms; long-press shows details.
             .pointerInput(model, active) {
                 if (!active) return@pointerInput
                 detectTapGestures(
+                    onTap = { onTap() },
                     onLongPress = { onLongPress() },
                     onDoubleTap = {
                         if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
