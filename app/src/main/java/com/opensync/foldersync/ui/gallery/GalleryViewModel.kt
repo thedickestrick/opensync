@@ -266,6 +266,43 @@ class GalleryViewModel : ViewModel() {
         return s.media.firstOrNull { it.key in s.selection }
     }
 
+    /** Delete one item straight from the full-screen viewer. */
+    fun deleteViewerItem(item: MediaItem) {
+        val rf = item.remoteFile ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busyMessage = "Deleting…") }
+            runCatching { repo.delete(listOf(rf)) }
+            _state.update { it.copy(busyMessage = null) }
+            refreshAfterOp(listOf(absPath(rf.relPath)))
+        }
+    }
+
+    /** Move one item into the vault straight from the full-screen viewer. */
+    fun vaultViewerItem(item: MediaItem) {
+        val rf = item.remoteFile ?: return
+        val s = _state.value
+        val local = (s.source is GallerySource.Provider && s.source.location == ExplorerLocation.LocalRoot) ||
+            (s.source is GallerySource.Device && s.inAlbum)
+        viewModelScope.launch {
+            when {
+                !VaultManager.exists() -> _state.update { it.copy(error = "Create a vault first (Vault tab).") }
+                !VaultManager.isUnlocked -> _state.update { it.copy(error = "Unlock the vault first (Vault tab).") }
+                else -> {
+                    _state.update { it.copy(busyMessage = "Moving to vault…") }
+                    val err = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val f = repo.materialize(item)
+                            VaultManager.importFile(Uri.fromFile(f))
+                            if (!local) repo.delete(listOf(rf))
+                        }.exceptionOrNull()?.message
+                    }
+                    _state.update { it.copy(busyMessage = null, error = err) }
+                    refreshAfterOp(listOf(absPath(rf.relPath)))
+                }
+            }
+        }
+    }
+
     /** Absolute on-device path for [item] when browsing local folders / a device album, else null. */
     fun localAbsolutePath(item: RemoteFile): String? {
         val s = _state.value
