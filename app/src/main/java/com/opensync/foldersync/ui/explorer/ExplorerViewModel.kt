@@ -9,6 +9,7 @@ import com.opensync.foldersync.files.DEFAULT_LOCAL_DIR
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.ExplorerRepository
 import com.opensync.foldersync.files.ShareInbox
+import com.opensync.foldersync.files.SharedClipboard
 import com.opensync.foldersync.files.ShareRequest
 import com.opensync.foldersync.files.SharedItem
 import com.opensync.foldersync.files.SortBy
@@ -57,7 +58,6 @@ class ExplorerViewModel : ViewModel() {
     val state = _state.asStateFlow()
 
     private var raw: List<RemoteFile> = emptyList()
-    private var clipboard: Clipboard? = null
     private var pendingShares: List<SharedItem> = emptyList()
 
     /** Remembered list scroll position, so opening a file and coming back keeps your place. */
@@ -69,6 +69,10 @@ class ExplorerViewModel : ViewModel() {
 
     init {
         navigate(DEFAULT_LOCAL_DIR)
+        // Reflect the shared clipboard (copies made here or in the Gallery) in the paste bar.
+        viewModelScope.launch {
+            SharedClipboard.flow.collect { c -> _state.update { it.copy(hasClipboard = c != null) } }
+        }
         viewModelScope.launch {
             ShareInbox.request.collect { req ->
                 when (req) {
@@ -266,22 +270,21 @@ class ExplorerViewModel : ViewModel() {
     }
 
     fun copySelected() {
-        clipboard = Clipboard(_state.value.location, selectedItems(), move = false)
-        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+        SharedClipboard.clip = Clipboard(_state.value.location, selectedItems(), move = false)
+        _state.update { it.copy(selection = emptySet()) }
     }
 
     fun cutSelected() {
-        clipboard = Clipboard(_state.value.location, selectedItems(), move = true)
-        _state.update { it.copy(hasClipboard = true, selection = emptySet()) }
+        SharedClipboard.clip = Clipboard(_state.value.location, selectedItems(), move = true)
+        _state.update { it.copy(selection = emptySet()) }
     }
 
     fun clearClipboard() {
-        clipboard = null
-        _state.update { it.copy(hasClipboard = false) }
+        SharedClipboard.clip = null
     }
 
     fun paste() {
-        val clip = clipboard ?: return
+        val clip = SharedClipboard.clip ?: return
         viewModelScope.launch {
             _state.update { it.copy(busyMessage = "Preparing…") }
             try {
@@ -291,8 +294,8 @@ class ExplorerViewModel : ViewModel() {
                     onProgress = { name -> _state.update { it.copy(busyMessage = "Copying $name") } },
                     isCancelled = { false }
                 )
-                if (clip.move) clipboard = null
-                _state.update { it.copy(busyMessage = null, hasClipboard = clipboard != null) }
+                if (clip.move) SharedClipboard.clip = null
+                _state.update { it.copy(busyMessage = null) }
                 refresh()
             } catch (e: Exception) {
                 _state.update { it.copy(busyMessage = null, error = e.message ?: "Paste failed") }
