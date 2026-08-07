@@ -14,6 +14,8 @@ import com.opensync.foldersync.files.ShareRequest
 import com.opensync.foldersync.files.SharedItem
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.share.ShareBundle
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -66,6 +68,10 @@ class ExplorerViewModel : ViewModel() {
 
     private val _openFile = Channel<File>(Channel.BUFFERED)
     val openFile = _openFile.receiveAsFlow()
+
+    /** Emitted once the selected files are on disk and ready for the system share sheet. */
+    private val _share = Channel<ShareBundle>(Channel.BUFFERED)
+    val shareRequests = _share.receiveAsFlow()
 
     init {
         navigate(DEFAULT_LOCAL_DIR)
@@ -265,6 +271,29 @@ class ExplorerViewModel : ViewModel() {
                     _state.update { it.copy(busyMessage = null, error = err) }
                     refresh()
                 }
+            }
+        }
+    }
+
+    /**
+     * Send the selected files to the phone's share sheet. Remote files are downloaded to the cache
+     * first (that is what [ExplorerRepository.materialize] does), since other apps can only read a
+     * real local file through our FileProvider.
+     */
+    fun shareSelected() {
+        val items = selectedItems().filter { !it.isDirectory }
+        if (items.isEmpty()) {
+            _state.update { it.copy(error = "Only files can be shared — folders are skipped") }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busyMessage = "Preparing to share…") }
+            try {
+                val files = withContext(Dispatchers.IO) { items.map { repo.materialize(it) } }
+                _state.update { it.copy(busyMessage = null, selection = emptySet()) }
+                _share.send(ShareUtil.bundleOfFiles(Graph.appContext, files))
+            } catch (e: Exception) {
+                _state.update { it.copy(busyMessage = null, error = e.message ?: "Couldn't prepare these files") }
             }
         }
     }

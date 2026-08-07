@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -88,6 +89,7 @@ import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.components.StoragePermissionBanner
 import com.opensync.foldersync.ui.formatBytes
 import java.io.File
@@ -122,6 +124,9 @@ fun ExplorerScreen(
     LaunchedEffect(Unit) {
         vm.openFile.collect { file -> openFile(context, file, onOpenPdf) }
     }
+    LaunchedEffect(Unit) {
+        vm.shareRequests.collect { bundle -> ShareUtil.share(context, bundle) }
+    }
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbar.showSnackbar(it)
@@ -140,6 +145,7 @@ fun ExplorerScreen(
                 SelectionBar(
                     count = state.selection.size,
                     onClose = vm::clearSelection,
+                    onShare = vm::shareSelected,
                     onCopy = vm::copySelected,
                     onCut = vm::cutSelected,
                     onDelete = { showDeleteConfirm = true },
@@ -350,6 +356,7 @@ private fun ExplorerTopBar(
 private fun SelectionBar(
     count: Int,
     onClose: () -> Unit,
+    onShare: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
     onDelete: () -> Unit,
@@ -366,9 +373,9 @@ private fun SelectionBar(
         title = { Text("$count selected") },
         actions = {
             // Keep the primary actions as icons; overflow the rest so nothing gets clipped off-screen.
+            IconButton(onClick = onShare) { Icon(Icons.Filled.Share, contentDescription = "Share") }
             IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
             IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
-            IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
             Box {
                 var overflow by remember { mutableStateOf(false) }
@@ -376,6 +383,11 @@ private fun SelectionBar(
                     Icon(Icons.Filled.MoreVert, contentDescription = "More")
                 }
                 DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Move to vault") },
+                        leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                        onClick = { overflow = false; onMoveToVault() }
+                    )
                     if (canRename) {
                         DropdownMenuItem(
                             text = { Text("Details") },

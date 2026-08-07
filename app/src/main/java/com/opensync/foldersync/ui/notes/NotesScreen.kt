@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
@@ -89,6 +90,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.notes.NoteConverter
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.formatBytes
 import com.opensync.foldersync.ui.formatTimestamp
 import com.opensync.foldersync.update.AppPrefs
@@ -486,6 +488,16 @@ fun NotesScreen(
                     count = state.selection.size,
                     canRename = state.selection.size == 1,
                     onClose = { vm.clearSelection() },
+                    onShare = {
+                        val files = state.selection.map(::File).filter { it.isFile }
+                        if (files.isEmpty()) {
+                            Toast.makeText(context, "Only notes can be shared — folders are skipped",
+                                Toast.LENGTH_SHORT).show()
+                        } else {
+                            ShareUtil.shareFiles(context, files)
+                            vm.clearSelection()
+                        }
+                    },
                     onPin = { vm.togglePinSelected() },
                     onCopy = { vm.copySelected() },
                     onCut = { vm.cutSelected() },
@@ -764,6 +776,7 @@ private fun NotesSelectionBar(
     count: Int,
     canRename: Boolean,
     onClose: () -> Unit,
+    onShare: () -> Unit,
     onPin: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
@@ -779,6 +792,7 @@ private fun NotesSelectionBar(
         title = { Text("$count selected") },
         actions = {
             // Primary actions as icons; overflow the rest so nothing gets clipped off-screen.
+            IconButton(onClick = onShare) { Icon(Icons.Filled.Share, contentDescription = "Share") }
             IconButton(onClick = onPin) { Icon(Icons.Filled.PushPin, contentDescription = "Pin / unpin") }
             IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }

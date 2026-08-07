@@ -40,8 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.pdf.PdfDoc
 import com.opensync.foldersync.pdf.PdfRequest
 import java.io.File
@@ -56,6 +58,7 @@ fun PdfViewerScreen(
     onFillForm: () -> Unit = {}
 ) {
     val path = remember { PdfRequest.path }
+    val context = LocalContext.current
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
     var pageCount by remember { mutableStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -104,6 +107,13 @@ fun PdfViewerScreen(
                             Icon(Icons.Filled.MoreVert, contentDescription = "More")
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Share") },
+                                onClick = {
+                                    menuOpen = false
+                                    path?.let { ShareUtil.shareFiles(context, listOf(File(it))) }
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Annotate") },
                                 onClick = { menuOpen = false; onAnnotate() }

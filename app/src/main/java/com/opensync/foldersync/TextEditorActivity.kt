@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.notes.MarkdownView
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.Dispatchers
@@ -182,6 +184,11 @@ private fun TextEditorScreen(
                     }
                 },
                 actions = {
+                    // Shares the text itself: this file may have arrived as another app's
+                    // content:// Uri, which we can't legally re-grant to a third app.
+                    IconButton(onClick = { ShareUtil.shareText(context, body.text, title) }, enabled = loaded) {
+                        Icon(Icons.Filled.Share, contentDescription = "Share")
+                    }
                     IconButton(onClick = { preview = !preview }) {
                         Icon(
                             if (preview) Icons.Filled.Edit else Icons.Filled.Visibility,
