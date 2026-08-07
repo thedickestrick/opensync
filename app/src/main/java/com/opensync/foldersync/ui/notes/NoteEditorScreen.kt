@@ -3,6 +3,7 @@ package com.opensync.foldersync.ui.notes
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,10 +27,14 @@ import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,6 +61,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.notes.NoteEditRequest
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -87,6 +93,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var replaceText by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showVaultConfirm by remember { mutableStateOf(false) }
+    var overflow by remember { mutableStateOf(false) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
 
@@ -184,6 +191,11 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         commit(body.copy(text = body.text.replace(findText, replaceText, ignoreCase = true)))
     }
 
+    /** Share what's on screen right now — including unsaved edits — as plain text. */
+    fun shareText() {
+        ShareUtil.shareText(context, body.text, title.trim().ifBlank { "Note" })
+    }
+
     fun deleteNote() {
         val file = existing ?: return
         scope.launch {
@@ -261,21 +273,8 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     }
                 },
                 actions = {
-                    if (existing != null) {
-                        IconButton(onClick = {
-                            when {
-                                !VaultManager.exists() ->
-                                    Toast.makeText(context, "Create a vault first (Vault tab).", Toast.LENGTH_LONG).show()
-                                !VaultManager.isUnlocked ->
-                                    Toast.makeText(context, "Unlock the vault first (Vault tab).", Toast.LENGTH_LONG).show()
-                                else -> showVaultConfirm = true
-                            }
-                        }) {
-                            Icon(Icons.Filled.Lock, contentDescription = "Move to vault")
-                        }
-                        IconButton(onClick = { showDeleteConfirm = true }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete note")
-                        }
+                    IconButton(onClick = { shareText() }, enabled = loaded) {
+                        Icon(Icons.Filled.Share, contentDescription = "Share")
                     }
                     if (!preview) {
                         IconButton(onClick = { showFind = !showFind }) {
@@ -290,6 +289,43 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     }
                     IconButton(onClick = { save() }, enabled = loaded && !saving) {
                         Icon(Icons.Filled.Check, contentDescription = "Save")
+                    }
+                    // Vault / delete / "share the file itself" live in the overflow so the bar still
+                    // fits once Share is a first-class action.
+                    if (existing != null) {
+                        Box {
+                            IconButton(onClick = { overflow = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Share file (.${existing.extension.lowercase()})") },
+                                    leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                                    onClick = { overflow = false; ShareUtil.shareFiles(context, listOf(existing)) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Move to vault") },
+                                    leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                    onClick = {
+                                        overflow = false
+                                        when {
+                                            !VaultManager.exists() -> Toast.makeText(
+                                                context, "Create a vault first (Vault tab).", Toast.LENGTH_LONG
+                                            ).show()
+                                            !VaultManager.isUnlocked -> Toast.makeText(
+                                                context, "Unlock the vault first (Vault tab).", Toast.LENGTH_LONG
+                                            ).show()
+                                            else -> showVaultConfirm = true
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete note") },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                                    onClick = { overflow = false; showDeleteConfirm = true }
+                                )
+                            }
+                        }
                     }
                 }
             )

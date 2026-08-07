@@ -17,7 +17,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -41,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.notes.NoteConverter
 import com.opensync.foldersync.notes.NoteParser
 import com.opensync.foldersync.notes.NoteRequest
@@ -62,7 +66,9 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
     val isRaw = lower.endsWith(".spd") || lower.endsWith(".sdoc") || lower.endsWith(".sdocx") ||
         lower.endsWith(".snb") || lower.endsWith(".memo")
     val isImage = listOf(".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif").any { lower.endsWith(it) }
+    val isText = listOf(".md", ".markdown", ".txt", ".rtf").any { lower.endsWith(it) }
     var converting by remember { mutableStateOf(false) }
+    var shareMenu by remember { mutableStateOf(false) }
 
     // Parse raw Samsung Notes files once so we can preview and convert them.
     val parsed: ParsedNote? = if (isRaw && file != null) {
@@ -72,6 +78,22 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
         }
         s
     } else null
+
+    /** Send the note's words to apps that take text (messaging, mail, other note apps). */
+    fun shareAsText() {
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                when {
+                    isText && file != null -> runCatching {
+                        val raw = file.readText(Charsets.UTF_8)
+                        if (file.extension.equals("rtf", ignoreCase = true)) stripRtf(raw) else raw
+                    }.getOrDefault("")
+                    else -> parsed?.text.orEmpty()
+                }
+            }
+            ShareUtil.shareText(context, text, file?.nameWithoutExtension)
+        }
+    }
 
     fun convertAndEdit() {
         val src = file ?: return
@@ -101,6 +123,31 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
                     if (isRaw) {
                         IconButton(onClick = { convertAndEdit() }, enabled = parsed != null && !converting) {
                             Icon(Icons.Filled.Edit, contentDescription = "Convert to editable note")
+                        }
+                    }
+                    if (file != null) {
+                        // Notes with words in them can go out either way: as text (what messaging
+                        // apps want) or as the file itself. Anything else just shares the file.
+                        val canShareText = isText || (isRaw && !parsed?.text.isNullOrBlank())
+                        Box {
+                            IconButton(
+                                onClick = {
+                                    if (canShareText) shareMenu = true
+                                    else ShareUtil.shareFiles(context, listOf(file))
+                                }
+                            ) {
+                                Icon(Icons.Filled.Share, contentDescription = "Share")
+                            }
+                            DropdownMenu(expanded = shareMenu, onDismissRequest = { shareMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Share as text") },
+                                    onClick = { shareMenu = false; shareAsText() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share file (${file.extension.lowercase()})") },
+                                    onClick = { shareMenu = false; ShareUtil.shareFiles(context, listOf(file)) }
+                                )
+                            }
                         }
                     }
                 }

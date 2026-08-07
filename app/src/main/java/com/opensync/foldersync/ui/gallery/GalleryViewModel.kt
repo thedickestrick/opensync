@@ -15,12 +15,16 @@ import com.opensync.foldersync.gallery.GalleryRepository
 import com.opensync.foldersync.gallery.GallerySource
 import com.opensync.foldersync.gallery.MediaItem
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.share.ShareBundle
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -73,6 +77,10 @@ class GalleryViewModel : ViewModel() {
 
     private val _remoteThumbs = MutableStateFlow<Map<String, File>>(emptyMap())
     val remoteThumbs = _remoteThumbs.asStateFlow()
+
+    /** Emitted once the chosen media is ready to hand to the system share sheet. */
+    private val _share = Channel<ShareBundle>(Channel.BUFFERED)
+    val shareRequests = _share.receiveAsFlow()
 
     private var thumbJob: Job? = null
     private var rawAlbums: List<Album> = emptyList()
@@ -277,6 +285,48 @@ class GalleryViewModel : ViewModel() {
             runCatching { repo.delete(listOf(rf)) }
             _state.update { it.copy(busyMessage = null) }
             refreshAfterOp(listOf(absPath(rf.relPath)))
+        }
+    }
+
+    /** Share the selected photos/videos through the phone's share sheet. */
+    fun shareSelected() {
+        val s = _state.value
+        val items = s.media.filter { it.key in s.selection }
+        if (items.isEmpty()) {
+            _state.update { it.copy(error = "Only photos and videos can be shared — folders are skipped") }
+            return
+        }
+        shareItems(items)
+    }
+
+    /** Share one item straight from the full-screen viewer. */
+    fun shareViewerItem(item: MediaItem) = shareItems(listOf(item))
+
+    /**
+     * Device photos already have a MediaStore URI other apps can read; anything folder-backed is
+     * materialized (downloading it first when the folder lives on a remote account) and handed out
+     * through our FileProvider.
+     */
+    private fun shareItems(items: List<MediaItem>) {
+        viewModelScope.launch {
+            _state.update { it.copy(busyMessage = "Preparing to share…") }
+            try {
+                val uris = withContext(Dispatchers.IO) {
+                    items.map { item ->
+                        item.deviceUri ?: ShareUtil.uriFor(Graph.appContext, repo.materialize(item))
+                    }
+                }
+                _state.update { it.copy(busyMessage = null, selection = emptySet()) }
+                _share.send(
+                    ShareBundle(
+                        uris = uris,
+                        mime = ShareUtil.commonMime(items.map { ShareUtil.mimeOf(it.name) }),
+                        subject = items.singleOrNull()?.name
+                    )
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(busyMessage = null, error = e.message ?: "Couldn't prepare this media") }
+            }
         }
     }
 

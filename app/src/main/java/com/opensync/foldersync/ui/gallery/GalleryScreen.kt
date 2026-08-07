@@ -71,6 +71,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -140,6 +141,7 @@ import com.opensync.foldersync.gallery.AlbumSort
 import com.opensync.foldersync.gallery.GallerySource
 import com.opensync.foldersync.gallery.MediaItem
 import com.opensync.foldersync.provider.RemoteFile
+import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.PermissionUtil
 import java.io.File
 
@@ -191,6 +193,10 @@ fun GalleryScreen(
         }
     }
 
+    LaunchedEffect(Unit) {
+        vm.shareRequests.collect { bundle -> ShareUtil.share(context, bundle) }
+    }
+
     BackHandler(enabled = state.canBack) { vm.back() }
 
     Scaffold(
@@ -200,6 +206,7 @@ fun GalleryScreen(
                     count = state.selection.size,
                     canRename = state.selection.size == 1,
                     onClose = vm::clearSelection,
+                    onShare = vm::shareSelected,
                     onCopy = vm::copySelected,
                     onCut = vm::cutSelected,
                     onDelete = { showDeleteConfirm = true },
@@ -326,6 +333,7 @@ fun GalleryScreen(
             onShowDetails = { viewerDetails = it },
             onDelete = { viewerDeleteItem = it },
             onEdit = { launchEditor(it) },
+            onShare = { vm.shareViewerItem(it) },
             onVault = { viewerVaultItem = it }
         )
     }
@@ -423,6 +431,7 @@ private fun GallerySelectionBar(
     count: Int,
     canRename: Boolean,
     onClose: () -> Unit,
+    onShare: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
     onDelete: () -> Unit,
@@ -439,9 +448,9 @@ private fun GallerySelectionBar(
         title = { Text("$count selected") },
         actions = {
             // Primary actions as icons; overflow the rest so nothing gets clipped off-screen.
+            IconButton(onClick = onShare) { Icon(Icons.Filled.Share, contentDescription = "Share") }
             IconButton(onClick = onCopy) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
             IconButton(onClick = onCut) { Icon(Icons.Filled.ContentCut, contentDescription = "Cut") }
-            IconButton(onClick = onMoveToVault) { Icon(Icons.Filled.Lock, contentDescription = "Move to vault") }
             IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete") }
             Box {
                 var overflow by remember { mutableStateOf(false) }
@@ -449,6 +458,11 @@ private fun GallerySelectionBar(
                     Icon(Icons.Filled.MoreVert, contentDescription = "More")
                 }
                 DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Move to vault") },
+                        leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                        onClick = { overflow = false; onMoveToVault() }
+                    )
                     if (canRename) {
                         DropdownMenuItem(text = { Text("Edit photo") }, onClick = { overflow = false; onEdit() })
                         DropdownMenuItem(text = { Text("Details") }, onClick = { overflow = false; onDetails() })
@@ -700,6 +714,7 @@ private fun MediaViewer(
     onShowDetails: (MediaItem) -> Unit = {},
     onDelete: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
+    onShare: (MediaItem) -> Unit = {},
     onVault: (MediaItem) -> Unit = {}
 ) {
     if (items.isEmpty()) { onClose(); return }
@@ -776,6 +791,7 @@ private fun MediaViewer(
                     }
                     Spacer(Modifier.weight(1f))
                     current?.let { c ->
+                        IconButton(onClick = { onShare(c) }) { Icon(Icons.Filled.Share, "Share", tint = Color.White) }
                         if (!c.isVideo) IconButton(onClick = { onEdit(c) }) { Icon(Icons.Filled.Edit, "Edit", tint = Color.White) }
                         IconButton(onClick = { onShowDetails(c) }) { Icon(Icons.Filled.Info, "Details", tint = Color.White) }
                         IconButton(onClick = { onVault(c) }) { Icon(Icons.Filled.Lock, "Move to vault", tint = Color.White) }
