@@ -87,7 +87,10 @@ object ProviderFactory {
                     clientId = account.username,
                     clientSecret = account.host,
                     refreshToken = password,
-                    basePath = PathUtil.join(account.basePath, subPath)
+                    basePath = PathUtil.join(account.basePath, subPath),
+                    onRefreshTokenRotated = { fresh ->
+                        OAuthTokenStore.saveRefreshToken(account.id, fresh)
+                    }
                 )
         }
     }
