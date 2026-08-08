@@ -27,7 +27,9 @@ class GoogleDriveProvider(
     private val clientId: String,
     private val clientSecret: String,
     private val refreshToken: String,
-    private val basePath: String
+    private val basePath: String,
+    /** Called if Google ever hands back a rotated refresh token, so it can be persisted. */
+    private val onRefreshTokenRotated: ((String) -> Unit)? = null
 ) : StorageProvider {
 
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -37,6 +39,8 @@ class GoogleDriveProvider(
         .build()
 
     @Volatile private var accessToken: String? = null
+    /** When [accessToken] stops being usable (epoch millis); 0 when there is no token. */
+    @Volatile private var accessTokenExpiresAt = 0L
     private var rootId: String = "root"
     private val folderCache = HashMap<String, String>() // rel folder path -> folder id
 
@@ -115,7 +119,7 @@ class GoogleDriveProvider(
                 .header("Authorization", "Bearer ${token()}").get().build()
             val resp = client.newCall(req).execute()
             try {
-                if (resp.code == 401 && attempt == 0) { accessToken = null; continue }
+                if (resp.code == 401 && attempt == 0) { invalidateToken(); continue }
                 if (!resp.isSuccessful) throw IOException("Drive download ${resp.code} for $relPath")
                 dest.outputStream().use { out -> resp.body!!.byteStream().copyTo(out) }
                 return
@@ -152,7 +156,7 @@ class GoogleDriveProvider(
                     .build()
                 val resp = client.newCall(req).execute()
                 try {
-                    if (resp.code == 401 && attempt == 0) { accessToken = null; continue }
+                    if (resp.code == 401 && attempt == 0) { invalidateToken(); continue }
                     if (!resp.isSuccessful) throw IOException("Drive upload init ${resp.code}: ${resp.body?.string()?.take(200)}")
                     loc = resp.header("Location") ?: throw IOException("Drive: no resumable session URL")
                     break
@@ -160,13 +164,20 @@ class GoogleDriveProvider(
             }
             loc ?: throw IOException("Drive upload init failed")
         }
-        val put = Request.Builder().url(location)
-            .header("Authorization", "Bearer ${token()}")
-            .put(src.asRequestBody(OCTET))
-            .build()
-        client.newCall(put).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("Drive upload ${resp.code}: ${resp.body?.string()?.take(200)}")
+        // A big upload can outlive the access token it started with, so a 401 here gets one retry
+        // with a freshly minted token rather than failing the whole file.
+        for (attempt in 0..1) {
+            val put = Request.Builder().url(location)
+                .header("Authorization", "Bearer ${token()}")
+                .put(src.asRequestBody(OCTET))
+                .build()
+            client.newCall(put).execute().use { resp ->
+                if (resp.code == 401 && attempt == 0) { invalidateToken(); return@use }
+                if (!resp.isSuccessful) throw IOException("Drive upload ${resp.code}: ${resp.body?.string()?.take(200)}")
+                return
+            }
         }
+        throw IOException("Drive upload failed for ${src.name}")
     }
 
     // ---- path <-> id resolution ----
@@ -230,27 +241,92 @@ class GoogleDriveProvider(
 
     private fun getJson(url: String): String = requestString("GET", url, null)
 
+    /**
+     * A usable access token. Google's tokens last an hour, so this renews *before* expiry rather
+     * than waiting for a 401 — otherwise a long upload started with a nearly-expired token dies
+     * partway through.
+     */
     private fun token(): String {
-        accessToken?.let { return it }
-        refreshAccess()
+        if (!tokenIsFresh()) refreshAccess()
         return accessToken ?: throw IOException("Google Drive not authenticated")
     }
 
+    private fun tokenIsFresh(): Boolean =
+        accessToken != null && System.currentTimeMillis() < accessTokenExpiresAt - EXPIRY_SKEW_MS
+
+    /** A refresh that failed for a reason worth retrying (network blip, 5xx, rate limit). */
+    private class TransientAuthError(message: String, cause: Exception? = null) : IOException(message, cause)
+
     @Synchronized
     private fun refreshAccess() {
+        // Another thread may have refreshed while this one waited for the lock.
+        if (tokenIsFresh()) return
+        var last: Exception? = null
+        for (attempt in 0 until AUTH_ATTEMPTS) {
+            try {
+                fetchAccessToken()
+                return
+            } catch (e: TransientAuthError) {
+                last = e
+                runCatching { Thread.sleep(1000L * (attempt + 1)) }
+            }
+        }
+        throw IOException(
+            "Couldn't reach Google to refresh the sign-in (${last?.message ?: "network error"}). " +
+                "The account is still connected — this looks like a network problem, not a sign-in one."
+        )
+    }
+
+    private fun fetchAccessToken() {
         val form = FormBody.Builder()
             .add("client_id", clientId)
             .add("client_secret", clientSecret)
             .add("refresh_token", refreshToken)
             .add("grant_type", "refresh_token")
             .build()
-        client.newCall(Request.Builder().url(TOKEN).post(form).build()).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) throw IOException("Google auth failed (${resp.code}). Re-connect the account.")
-            accessToken = JSONObject(body).optString("access_token").ifBlank {
-                throw IOException("Google returned no access token")
-            }
+        val resp = try {
+            client.newCall(Request.Builder().url(TOKEN).post(form).build()).execute()
+        } catch (e: IOException) {
+            throw TransientAuthError(e.message ?: "network error", e)
         }
+        resp.use {
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                val error = runCatching { JSONObject(body).optString("error") }.getOrNull().orEmpty()
+                // invalid_grant means the refresh token itself is dead — revoked, password changed,
+                // or expired because the OAuth consent screen is still in "Testing" (7-day limit).
+                if (error == "invalid_grant") throw IOException(
+                    "Google sign-in expired — reconnect the account under Accounts → Google Drive. " +
+                        "If this happens about weekly, set the OAuth consent screen in Google Cloud " +
+                        "Console to \"In production\": refresh tokens for apps still in \"Testing\" " +
+                        "are expired by Google after 7 days."
+                )
+                if (resp.code == 429 || resp.code in 500..599) {
+                    throw TransientAuthError("Google auth ${resp.code}")
+                }
+                val detail = runCatching {
+                    JSONObject(body).optString("error_description").ifBlank { error }
+                }.getOrNull().orEmpty()
+                throw IOException(
+                    "Google auth failed (${resp.code})" + if (detail.isNotBlank()) ": $detail" else ""
+                )
+            }
+            val json = JSONObject(body)
+            val fresh = json.optString("access_token").ifBlank { throw IOException("Google returned no access token") }
+            // Trust the server's lifetime; fall back to Google's usual hour if it's absent.
+            val ttlSeconds = json.optLong("expires_in", 3600L).coerceAtLeast(60L)
+            accessToken = fresh
+            accessTokenExpiresAt = System.currentTimeMillis() + ttlSeconds * 1000L
+            json.optString("refresh_token")
+                .takeIf { it.isNotBlank() && it != refreshToken }
+                ?.let { rotated -> runCatching { onRefreshTokenRotated?.invoke(rotated) } }
+        }
+    }
+
+    /** Drops the cached token so the next call mints a fresh one (used after a 401). */
+    private fun invalidateToken() {
+        accessToken = null
+        accessTokenExpiresAt = 0L
     }
 
     private fun requestString(method: String, url: String, body: RequestBody?): String {
@@ -261,7 +337,7 @@ class GoogleDriveProvider(
                 .build()
             val resp = client.newCall(req).execute()
             try {
-                if (resp.code == 401 && attempt == 0) { accessToken = null; continue }
+                if (resp.code == 401 && attempt == 0) { invalidateToken(); continue }
                 if (!resp.isSuccessful) throw IOException("Drive ${resp.code}: ${resp.body?.string()?.take(300)}")
                 return resp.body?.string() ?: ""
             } finally { resp.close() }
@@ -287,6 +363,10 @@ class GoogleDriveProvider(
         private const val DRIVE = "https://www.googleapis.com/drive/v3"
         private const val UPLOAD = "https://www.googleapis.com/upload/drive/v3"
         private const val TOKEN = "https://oauth2.googleapis.com/token"
+
+        /** Renew this far ahead of the stated expiry, so an in-flight request can't age out. */
+        private const val EXPIRY_SKEW_MS = 5 * 60 * 1000L
+        private const val AUTH_ATTEMPTS = 3
         private const val FOLDER_MIME = "application/vnd.google-apps.folder"
         private val JSON = "application/json; charset=utf-8".toMediaType()
         private val OCTET = "application/octet-stream".toMediaType()
