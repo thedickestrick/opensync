@@ -883,7 +883,7 @@ private fun MediaPage(
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             model == null -> if (active) CircularProgressIndicator(color = Color.White)
-            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress)
+            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap)
             else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap)
         }
     }
@@ -895,7 +895,8 @@ private fun VideoPlayer(
     active: Boolean = true,
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
-    onLongPress: () -> Unit = {}
+    onLongPress: () -> Unit = {},
+    onTap: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val uri: Uri = when (model) {
@@ -911,11 +912,12 @@ private fun VideoPlayer(
         }
     }
     DisposableEffect(uri) { onDispose { exo.release() } }
-    // Long-press for details is handled without swallowing the player's tap-to-toggle controls.
+    // Tap (chrome) and long-press (details) are handled without swallowing the player's own
+    // tap-to-toggle controls, so one tap raises both.
     Box(
         Modifier.fillMaxSize()
             .then(if (active) Modifier.horizontalSwipe(uri, onPrev, onNext) else Modifier)
-            .then(if (active) Modifier.longPressPassthrough(uri, onLongPress) else Modifier)
+            .then(if (active) Modifier.tapPassthrough(uri, onTap, onLongPress) else Modifier)
     ) {
         AndroidView(
             factory = { ctx -> PlayerView(ctx).apply { player = exo } },
@@ -952,31 +954,39 @@ private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () ->
     }
 
 /**
- * Fires [onLongPress] when a finger is held still past the long-press timeout, without consuming any
- * pointer events — so a normal tap still passes through to the video player's own controls underneath.
+ * Fires [onTap] on a quick tap and [onLongPress] on a held finger, without consuming any pointer
+ * events — so the same tap still reaches the video player's own play/pause controls underneath.
  */
-private fun Modifier.longPressPassthrough(key: Any, onLongPress: () -> Unit): Modifier =
+private fun Modifier.tapPassthrough(
+    key: Any,
+    onTap: () -> Unit,
+    onLongPress: () -> Unit
+): Modifier =
     pointerInput(key) {
         val timeout = viewConfiguration.longPressTimeoutMillis
         val slop = viewConfiguration.touchSlop
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             var moved = 0f
-            var fired = false
+            var lifted = false
+            var held = false
             try {
                 withTimeout(timeout) {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == down.id }
-                        if (change == null || !change.pressed) return@withTimeout // lifted → tap
+                        if (change == null || !change.pressed) { lifted = true; return@withTimeout }
                         moved += change.positionChange().getDistance()
-                        if (moved > slop) return@withTimeout // dragging → not a long-press
+                        if (moved > slop) return@withTimeout // dragging → neither tap nor long-press
                     }
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                fired = true
+                held = true
             }
-            if (fired) onLongPress()
+            when {
+                held -> onLongPress()
+                lifted && moved <= slop -> onTap()
+            }
         }
     }
 
@@ -1013,26 +1023,36 @@ private fun ZoomableImage(
             .pointerInput(model, active) {
                 if (!active) return@pointerInput
                 awaitEachGesture {
+                    val slop = viewConfiguration.touchSlop
                     awaitFirstDown(requireUnconsumed = false)
                     var dx = 0f
                     var dy = 0f
                     var zoomed = false
+                    // Nothing is consumed until the finger travels past touch slop. This handler runs
+                    // before detectTapGestures on the Main pass, and a consumed move cancels a tap —
+                    // so consuming eagerly would swallow taps that carry a pixel or two of jitter.
+                    var dragging = false
                     do {
                         val event = awaitPointerEvent()
                         val multiTouch = event.changes.count { it.pressed } > 1
+                        val pan = event.calculatePan()
+                        dx += pan.x; dy += pan.y
+                        if (!dragging && (multiTouch || abs(dx) > slop || abs(dy) > slop)) dragging = true
                         if (multiTouch || scale > 1f) {
-                            zoomed = true
-                            scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
-                            offset = if (scale > 1f) offset + event.calculatePan() else Offset.Zero
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (dragging) {
+                                zoomed = true
+                                scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                                offset = if (scale > 1f) offset + pan else Offset.Zero
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
                         } else {
-                            val pan = event.calculatePan()
-                            dx += pan.x; dy += pan.y
                             // Consume so the nav drawer / other ancestors don't treat this as their swipe.
-                            if (abs(dx) > abs(dy)) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (dragging && abs(dx) > abs(dy)) {
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
                         }
                     } while (event.changes.any { it.pressed })
-                    if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {
+                    if (!zoomed && scale <= 1f && dragging && abs(dx) > abs(dy)) {
                         val threshold = size.width * 0.15f
                         if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
                     }
