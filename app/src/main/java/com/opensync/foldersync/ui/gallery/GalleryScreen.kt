@@ -17,7 +17,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -111,12 +111,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -990,6 +992,50 @@ private fun Modifier.tapPassthrough(
         }
     }
 
+/**
+ * Tap / double-tap / long-press where the tap fires the instant the finger lifts, instead of sitting
+ * on it for the double-tap window to see whether a second tap is coming (what `detectTapGestures`
+ * does, and why raising the chrome used to lag ~300ms behind the tap).
+ *
+ * [onTap] must be a *toggle*: if a second tap does arrive, it is called again to undo the toggle the
+ * first tap already applied, and then [onDoubleTap] runs. So a double-tap blinks the chrome briefly
+ * and ends up zoomed with the chrome as it was — the trade for an instant single tap.
+ */
+private suspend fun PointerInputScope.detectInstantTaps(
+    onTap: () -> Unit,
+    onDoubleTap: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    awaitEachGesture {
+        awaitFirstDown()
+
+        // Null from waitForUpOrCancellation means the pan/zoom handler claimed the gesture; null
+        // from the timeout means the finger is still down. Only the latter is a long-press.
+        var claimed = false
+        val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            waitForUpOrCancellation().also { if (it == null) claimed = true }
+        }
+        if (claimed) return@awaitEachGesture
+        if (up == null) {
+            onLongPress()
+            return@awaitEachGesture
+        }
+
+        onTap()
+
+        withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) { awaitFirstDown() }
+            ?: return@awaitEachGesture
+        var secondClaimed = false
+        val secondUp = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            waitForUpOrCancellation().also { if (it == null) secondClaimed = true }
+        }
+        if (!secondClaimed && secondUp != null) {
+            onTap()        // revert the toggle the first tap already applied
+            onDoubleTap()
+        }
+    }
+}
+
 @Composable
 private fun ZoomableImage(
     model: Any?,
@@ -1011,7 +1057,7 @@ private fun ZoomableImage(
             // Tap toggles the viewer chrome; double-tap zooms; long-press shows details.
             .pointerInput(model, active) {
                 if (!active) return@pointerInput
-                detectTapGestures(
+                detectInstantTaps(
                     onTap = { onTap() },
                     onLongPress = { onLongPress() },
                     onDoubleTap = {
@@ -1029,7 +1075,7 @@ private fun ZoomableImage(
                     var dy = 0f
                     var zoomed = false
                     // Nothing is consumed until the finger travels past touch slop. This handler runs
-                    // before detectTapGestures on the Main pass, and a consumed move cancels a tap —
+                    // before the tap detector on the Main pass, and a consumed move cancels a tap —
                     // so consuming eagerly would swallow taps that carry a pixel or two of jitter.
                     var dragging = false
                     do {
