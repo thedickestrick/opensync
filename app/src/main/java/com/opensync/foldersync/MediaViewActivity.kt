@@ -151,25 +151,35 @@ private fun SwipeImage(uri: Uri, onPrev: () -> Unit, onNext: () -> Unit) {
             }
             .pointerInput(uri) {
                 awaitEachGesture {
+                    val slop = viewConfiguration.touchSlop
                     awaitFirstDown(requireUnconsumed = false)
                     var dx = 0f
                     var dy = 0f
                     var zoomed = false
+                    // Consume nothing until the finger passes touch slop: this handler runs before
+                    // detectTapGestures on the Main pass, and a consumed move cancels the tap — so
+                    // eager consumption would swallow double-taps that carry a little jitter.
+                    var dragging = false
                     do {
                         val event = awaitPointerEvent()
                         val multiTouch = event.changes.count { it.pressed } > 1
+                        val pan = event.calculatePan()
+                        dx += pan.x; dy += pan.y
+                        if (!dragging && (multiTouch || abs(dx) > slop || abs(dy) > slop)) dragging = true
                         if (multiTouch || scale > 1f) {
-                            zoomed = true
-                            scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
-                            offset = if (scale > 1f) offset + event.calculatePan() else Offset.Zero
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (dragging) {
+                                zoomed = true
+                                scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                                offset = if (scale > 1f) offset + pan else Offset.Zero
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
                         } else {
-                            val pan = event.calculatePan()
-                            dx += pan.x; dy += pan.y
-                            if (abs(dx) > abs(dy)) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (dragging && abs(dx) > abs(dy)) {
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
                         }
                     } while (event.changes.any { it.pressed })
-                    if (!zoomed && scale <= 1f && abs(dx) > abs(dy)) {
+                    if (!zoomed && scale <= 1f && dragging && abs(dx) > abs(dy)) {
                         val threshold = size.width * 0.15f
                         if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
                     }
