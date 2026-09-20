@@ -32,7 +32,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -51,6 +50,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.share.ShareUtil
+import com.opensync.foldersync.ui.notes.MarkdownEditField
 import com.opensync.foldersync.ui.notes.MarkdownView
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.Dispatchers
@@ -235,10 +235,11 @@ private fun TextEditorScreen(
                     IconButton(onClick = { linePrefix("- [ ] ") }) { Icon(Icons.Filled.CheckBox, "Checklist") }
                     IconButton(onClick = { linePrefix("> ") }) { Icon(Icons.Filled.FormatQuote, "Quote") }
                 }
-                OutlinedTextField(
+                // Same WYSIWYG surface as the notes editor: Markdown renders, markers stay hidden.
+                MarkdownEditField(
                     value = body,
                     onValueChange = { body = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)
+                    modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 4.dp, bottom = 8.dp)
                 )
             }
         }
