@@ -1,19 +1,30 @@
 package com.opensync.foldersync.ui.notes
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
+
+/*
+ * Hiding the Markdown syntax is only half the job. A VisualTransformation changes what gets *drawn*,
+ * not what the caret walks over or what backspace removes — so without this the markers are still
+ * there to step into and delete, and knocking one star out of a `**` pair silently unformats the
+ * text. Everything here works off the offset map the transformation already builds: original offsets
+ * that share a transformed offset are the same place on screen, so a caret move between them is a
+ * keypress that appears to do nothing, and a deletion between them removes something invisible.
+ */
+
+/** First original offset that draws at the same place as [i]. */
+internal fun groupLo(o2t: IntArray, i: Int): Int {
+    var j = i.coerceIn(0, o2t.size - 1)
+    while (j > 0 && o2t[j - 1] == o2t[j]) j--
+    return j
+}
+
+/** Last original offset that draws at the same place as [i]. */
+internal fun groupHi(o2t: IntArray, i: Int): Int {
+    var j = i.coerceIn(0, o2t.size - 1)
+    while (j + 1 < o2t.size && o2t[j + 1] == o2t[j]) j++
+    return j
+}
 
 /** Length of the line-leading syntax on the line starting at [lineStart] — `## `, `- `, `- [ ] `, `> `. */
 internal fun blockPrefixLen(text: String, lineStart: Int): Int {
@@ -39,111 +50,116 @@ private fun fenceLen(text: String, i: Int): Int {
     return text.indexOf('\n', i).let { if (it < 0) text.length else it } - i
 }
 
-/**
- * Two tidy-ups a deletion needs that the rendered text can't express on its own: a line pulled up
- * onto the one above leaves its `>`/`-`/`#`/fence stranded mid-line, where it stops being syntax
- * and shows as literal text; and a `****` left lying around draws nothing but still has to go.
- */
-private fun tidy(source: String, caret: Int, joinedLines: Boolean): String {
-    var text = source
-    if (joinedLines) {
+private fun deleting(text: String, from: Int, to: Int): TextFieldValue {
+    if (from >= to) return TextFieldValue(text, TextRange(from))
+    val joinsLines = text.lastIndexOf('\n', to - 1) >= from
+    var out = text.removeRange(from, to)
+    if (joinsLines) {
         // The line just pulled up no longer starts a line, so its `>`/`-`/`#`/fence would stop
         // being syntax and appear as literal text. Take it with the newline.
-        val prefix = fenceLen(text, caret).takeIf { it > 0 } ?: blockPrefixLen(text, caret)
-        if (prefix > 0) text = text.removeRange(caret, (caret + prefix).coerceAtMost(text.length))
+        val prefix = fenceLen(out, from).takeIf { it > 0 } ?: blockPrefixLen(out, from)
+        if (prefix > 0) out = out.removeRange(from, (from + prefix).coerceAtMost(out.length))
     }
-    // `****` left over from emptying a bold run draws nothing, so dropping it changes no pixels.
-    if (caret < text.length) {
-        val lineEnd = text.indexOf('\n', caret).let { if (it < 0) text.length else it }
-        val stray = emptyPairLen(text, caret, lineEnd)
-        if (stray > 0) text = text.removeRange(caret, caret + stray)
-    }
-    return text
+    return stripEmptyPair(TextFieldValue(out, TextRange(from)))
 }
 
 /**
- * Translates an edit made to the rendered text back onto the Markdown behind it.
- *
- * [old] and [new] are what the text field held before and after; the result is the new Markdown
- * with the caret in source coordinates. Only the characters that actually changed are touched, so
- * syntax the renderer passes through untouched — tables, fenced code, anything unrecognised — comes
- * out of the file exactly as it went in.
+ * Deleting the last character out of `**bold**` leaves `****`, which emphasises nothing. Take the
+ * stubs with it, so emptying a bold run ends the bold rather than leaving invisible debris behind.
  */
-fun RenderedMarkdown.applyEdit(old: TextFieldValue, new: TextFieldValue): TextFieldValue {
+private fun stripEmptyPair(v: TextFieldValue): TextFieldValue {
+    val c = v.selection.start
+    if (c <= 0 || c >= v.text.length) return v
+    val ch = v.text[c]
+    if (ch !in "*_~`" || v.text[c - 1] != ch) return v
+    var s = c
+    while (s > 0 && v.text[s - 1] == ch) s--
+    var e = c
+    while (e < v.text.length && v.text[e] == ch) e++
+    val n = e - s
+    // Only when the caret is dead centre: that's a pair we just emptied, not text you're typing.
+    // Two is enough here, unlike the display rule — `_i_` leaves `__`, and nothing reaches this
+    // function except a deletion, so a half-typed `**` is never at risk.
+    return if (n >= 2 && n % 2 == 0 && c == s + n / 2) {
+        TextFieldValue(v.text.removeRange(s, e), TextRange(s))
+    } else v
+}
+
+/** Caret one visible character to the left of [from], having been asked to move to [to]. */
+private fun stepBack(o2t: IntArray, from: Int, to: Int): Int {
+    if (to == from) return to
+    if (o2t[to] != o2t[from]) return groupLo(o2t, to)
+    // Same place on screen, so the move would look like nothing happened: go a whole group further.
+    val lo = groupLo(o2t, from)
+    return if (lo == 0) 0 else groupLo(o2t, lo - 1)
+}
+
+/** Caret one visible character to the right of [from], having been asked to move to [to]. */
+private fun stepForward(o2t: IntArray, from: Int, to: Int): Int {
+    if (to == from) return to
+    if (o2t[to] != o2t[from]) return groupHi(o2t, to)
+    val hi = groupHi(o2t, from)
+    return if (hi >= o2t.size - 1) o2t.size - 1 else groupHi(o2t, hi + 1)
+}
+
+/**
+ * Rewrites what the text field just did so the hidden Markdown syntax behaves as if it isn't there:
+ * arrow keys and taps step over it, backspace and delete take the neighbouring *visible* character
+ * instead of quietly breaking a `**` pair, and backspacing into a line's `#`/`-`/`>` drops that
+ * marker the way any rich editor does.
+ *
+ * [o2t] is [MarkdownVisualTransformation.caretStops] for `old.text`.
+ */
+fun reconcileMarkdownEdit(old: TextFieldValue, new: TextFieldValue, o2t: IntArray): TextFieldValue {
+    val len = old.text.length
+    if (o2t.size != len + 1) return new     // map is for some other text; don't second-guess it
+
     if (new.text == old.text) {
-        val want = new.selection
-        val snapped = if (want.collapsed) {
-            TextRange(snapRendered(want.start, backwards = want.start < old.selection.start))
-        } else {
-            TextRange(snapRendered(want.min, backwards = true), snapRendered(want.max, backwards = false))
+        // Caret or selection moved. Mid-word the IME owns the caret, so leave it be.
+        if (new.selection == old.selection || new.composition != null) return new
+        if (!new.selection.collapsed) {
+            // Widen to whole constructs, so deleting a selection can't leave half a marker pair.
+            return new.copy(selection = TextRange(groupLo(o2t, new.selection.min), groupHi(o2t, new.selection.max)))
         }
-        return TextFieldValue(source, srcSelection(snapped))
+        val anchor = old.selection.start.coerceIn(0, len)
+        val target = new.selection.start.coerceIn(0, len)
+        val moved = if (target < anchor) stepBack(o2t, anchor, target) else stepForward(o2t, anchor, target)
+        return new.copy(selection = TextRange(moved))
     }
 
+    // What changed, in old-text coordinates: old[a, endOld) became new[a, endNew).
     var a = 0
-    val shared = minOf(old.text.length, new.text.length)
+    val shared = minOf(len, new.text.length)
     while (a < shared && old.text[a] == new.text[a]) a++
-    var endOld = old.text.length
+    var endOld = len
     var endNew = new.text.length
     while (endOld > a && endNew > a && old.text[endOld - 1] == new.text[endNew - 1]) { endOld--; endNew-- }
 
-    // Where the field says the caret ended up is the truth. Typing a space beside a space, or
-    // backspacing inside a run of the same letter, leaves the diff free to guess which one moved,
-    // and it guesses the last — which is a different place in the source, and the wrong one.
-    val insLen = endNew - a
-    val shift = a - (new.selection.start - insLen)
-    if (shift in 1..a && (insLen == 0 || endOld == a)) {
-        val a2 = a - shift
-        val rebuilt = old.text.substring(0, a2) + new.text.substring(a2, endNew - shift) +
-            old.text.substring(endOld - shift)
-        if (rebuilt == new.text) { a = a2; endOld -= shift; endNew -= shift }
+    // Only deletions can land on syntax you can't see; typing is left exactly as the IME meant it.
+    if (endNew != a || !old.selection.collapsed) return new
+    val caret = old.selection.start.coerceIn(0, len)
+
+    val lineStart = old.text.lastIndexOf('\n', (caret - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+    val prefix = blockPrefixLen(old.text, lineStart)
+    if (prefix > 0 && a < lineStart + prefix && endOld > lineStart) {
+        return deleting(old.text, lineStart, lineStart + prefix)   // unformat the line
     }
 
-    val deletion = endNew == a
-    val spliced = spliceRendered(a, endOld, new.text.substring(a, endNew))
-    // Typing a `*` beside another one is you building a marker, not emptying one, so only a
-    // deletion gets tidied up after.
-    val text = if (deletion) tidy(spliced.source, spliced.caret, spliced.joinedLines)
-    else spliced.source
-    return TextFieldValue(text, TextRange(spliced.caret.coerceAtMost(text.length)))
-}
+    // It removed something visible: a real edit, but it may have emptied a pair or joined two lines.
+    if (o2t[a] != o2t[endOld]) return deleting(old.text, a, endOld)
 
-/**
- * The note edit surface. The field holds the note *as it reads* — no syntax characters in it at
- * all — so the caret, the selection handles and the keyboard's own autocorrect all work on the
- * words you can see. [value] is the Markdown behind it, which is what gets saved.
- */
-@Composable
-fun MarkdownEditField(
-    value: TextFieldValue,
-    onValueChange: (TextFieldValue) -> Unit,
-    modifier: Modifier = Modifier,
-    placeholder: String = "Write your note…"
-) {
-    val colors = MaterialTheme.colorScheme
-    val body = MaterialTheme.typography.bodyLarge
-    val styles = rememberMarkdownStyles()
-    val doc = remember(value.text, styles) { renderMarkdown(value.text, styles) }
-    val shown = TextFieldValue(doc.text.text, doc.renderedSelection(value.selection))
-    // The text is already what we want on screen; this only paints the styles over it, character
-    // for character, so there is no offset mapping to get wrong.
-    val painter = remember(doc) {
-        VisualTransformation { input ->
-            if (input.text == doc.text.text) TransformedText(doc.text, OffsetMapping.Identity)
-            else TransformedText(input, OffsetMapping.Identity)
-        }
-    }
-    Box(modifier) {
-        if (value.text.isEmpty()) {
-            Text(placeholder, style = body, color = colors.onSurfaceVariant)
-        }
-        BasicTextField(
-            value = shown,
-            onValueChange = { onValueChange(doc.applyEdit(shown, it)) },
-            textStyle = body.copy(color = colors.onSurface),
-            cursorBrush = SolidColor(colors.primary),
-            visualTransformation = painter,
-            modifier = Modifier.fillMaxSize()
-        )
+    // The caret is inside an invisible `****`; either delete key clears the whole thing.
+    val lo = groupLo(o2t, caret)
+    val hi = groupHi(o2t, caret)
+    if (emptyPairLen(old.text, lo, hi) == hi - lo) return deleting(old.text, lo, hi)
+
+    // Take the one character that actually draws the neighbouring glyph — the last of its group,
+    // since the hidden ones ahead of it belong to a marker that has to stay paired.
+    return if (new.selection.start < caret) {   // backspace
+        val to = groupLo(o2t, caret)
+        if (to == 0) old else groupHi(o2t, to - 1).let { deleting(old.text, it, it + 1) }
+    } else {                                    // forward delete
+        val from = groupHi(o2t, caret)
+        if (from >= len) old else deleting(old.text, from, from + 1)
     }
 }

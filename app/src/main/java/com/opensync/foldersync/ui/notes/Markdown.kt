@@ -35,7 +35,7 @@ import java.io.File
 
 /**
  * Renders a lightweight Markdown subset (headings, bold/italic/strike/code, lists, checklists,
- * quotes, links, rules, fenced code, tables, images). [renderMarkdown] produces the same
+ * quotes, links, rules, fenced code, tables, images). [MarkdownVisualTransformation] hides the same
  * syntax while editing, so the two stay in step — change one and change the other.
  */
 @Composable
@@ -247,7 +247,7 @@ private val MD_STRIKE = SpanStyle(textDecoration = TextDecoration.LineThrough)
 /**
  * Parses inline `**bold**`, `*italic*` / `_italic_`, `~~strike~~`, `` `code` ``, `[links](url)` and
  * inline `![images](src)` into an AnnotatedString. Mirrors the inline pass in
- * [renderMarkdown] so a note reads the same whether you're editing it or not.
+ * [MarkdownVisualTransformation] so a note reads the same whether you're editing it or not.
  */
 fun inlineMarkdown(
     s: String,
