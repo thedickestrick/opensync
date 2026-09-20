@@ -41,9 +41,49 @@ internal fun blockPrefixLen(text: String, lineStart: Int): Int {
     }
 }
 
-private fun deleting(text: String, from: Int, to: Int): TextFieldValue =
-    if (from >= to) TextFieldValue(text, TextRange(from))
-    else TextFieldValue(text.removeRange(from, to), TextRange(from))
+/** Length of a ``` / ~~~ fence and its info string at [i], or 0. */
+private fun fenceLen(text: String, i: Int): Int {
+    if (i >= text.length || (text[i] != '`' && text[i] != '~')) return 0
+    var n = 0
+    while (i + n < text.length && text[i + n] == text[i]) n++
+    if (n < 3) return 0
+    return text.indexOf('\n', i).let { if (it < 0) text.length else it } - i
+}
+
+private fun deleting(text: String, from: Int, to: Int): TextFieldValue {
+    if (from >= to) return TextFieldValue(text, TextRange(from))
+    val joinsLines = text.lastIndexOf('\n', to - 1) >= from
+    var out = text.removeRange(from, to)
+    if (joinsLines) {
+        // The line just pulled up no longer starts a line, so its `>`/`-`/`#`/fence would stop
+        // being syntax and appear as literal text. Take it with the newline.
+        val prefix = fenceLen(out, from).takeIf { it > 0 } ?: blockPrefixLen(out, from)
+        if (prefix > 0) out = out.removeRange(from, (from + prefix).coerceAtMost(out.length))
+    }
+    return stripEmptyPair(TextFieldValue(out, TextRange(from)))
+}
+
+/**
+ * Deleting the last character out of `**bold**` leaves `****`, which emphasises nothing. Take the
+ * stubs with it, so emptying a bold run ends the bold rather than leaving invisible debris behind.
+ */
+private fun stripEmptyPair(v: TextFieldValue): TextFieldValue {
+    val c = v.selection.start
+    if (c <= 0 || c >= v.text.length) return v
+    val ch = v.text[c]
+    if (ch !in "*_~`" || v.text[c - 1] != ch) return v
+    var s = c
+    while (s > 0 && v.text[s - 1] == ch) s--
+    var e = c
+    while (e < v.text.length && v.text[e] == ch) e++
+    val n = e - s
+    // Only when the caret is dead centre: that's a pair we just emptied, not text you're typing.
+    // Two is enough here, unlike the display rule — `_i_` leaves `__`, and nothing reaches this
+    // function except a deletion, so a half-typed `**` is never at risk.
+    return if (n >= 2 && n % 2 == 0 && c == s + n / 2) {
+        TextFieldValue(v.text.removeRange(s, e), TextRange(s))
+    } else v
+}
 
 /** Caret one visible character to the left of [from], having been asked to move to [to]. */
 private fun stepBack(o2t: IntArray, from: Int, to: Int): Int {
@@ -105,13 +145,21 @@ fun reconcileMarkdownEdit(old: TextFieldValue, new: TextFieldValue, o2t: IntArra
         return deleting(old.text, lineStart, lineStart + prefix)   // unformat the line
     }
 
-    if (o2t[a] != o2t[endOld]) return new       // it removed something visible: that's a real edit
+    // It removed something visible: a real edit, but it may have emptied a pair or joined two lines.
+    if (o2t[a] != o2t[endOld]) return deleting(old.text, a, endOld)
 
+    // The caret is inside an invisible `****`; either delete key clears the whole thing.
+    val lo = groupLo(o2t, caret)
+    val hi = groupHi(o2t, caret)
+    if (emptyPairLen(old.text, lo, hi) == hi - lo) return deleting(old.text, lo, hi)
+
+    // Take the one character that actually draws the neighbouring glyph — the last of its group,
+    // since the hidden ones ahead of it belong to a marker that has to stay paired.
     return if (new.selection.start < caret) {   // backspace
         val to = groupLo(o2t, caret)
-        if (to == 0) old else deleting(old.text, groupLo(o2t, to - 1), to)
+        if (to == 0) old else groupHi(o2t, to - 1).let { deleting(old.text, it, it + 1) }
     } else {                                    // forward delete
         val from = groupHi(o2t, caret)
-        if (from >= len) old else deleting(old.text, from, groupHi(o2t, from + 1))
+        if (from >= len) old else deleting(old.text, from, from + 1)
     }
 }

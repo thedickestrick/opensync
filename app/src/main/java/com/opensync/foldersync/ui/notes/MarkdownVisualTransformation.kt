@@ -177,6 +177,9 @@ class MarkdownVisualTransformation(
                 val imageAt = if (c == '!' && src.startsWith("![", oi)) linkEnd(oi, true, lineEnd) else -1
                 val linkAt = if (c == '[') linkEnd(oi, false, lineEnd) else -1
                 when {
+                    // **** — a pair with nothing in it, which is what the Bold button leaves behind
+                    // and what's left when you delete the last character out of **bold**.
+                    emptyPairLen(src, oi, lineEnd) > 0 -> drop(emptyPairLen(src, oi, lineEnd))
                     imageAt >= 0 -> {
                         val close = src.indexOf(']', oi + 2)
                         replace(2, IMAGE_GLYPH, null)
@@ -214,6 +217,20 @@ class MarkdownVisualTransformation(
         const val RULE_GLYPHS = "────────"
         const val IMAGE_GLYPH = "🖼  "
     }
+}
+
+/**
+ * Length of an emphasis pair with nothing between its markers — `****`, `____`, `~~~~` — starting at
+ * [i]. Such a pair emphasises nothing, so it's drawn as nothing; an odd run isn't a pair, and a run
+ * of two is the opener you're part-way through typing, which should stay visible.
+ */
+internal fun emptyPairLen(src: String, i: Int, lineEnd: Int): Int {
+    val c = src[i]
+    if (c != '*' && c != '_' && c != '~') return 0
+    if (i > 0 && src[i - 1] == c) return 0      // not the start of the run
+    var n = 0
+    while (i + n < lineEnd && src[i + n] == c) n++
+    return if (n >= 4 && n % 2 == 0) n else 0
 }
 
 /** A transformation wired to the current theme, so editing and reading agree on how a note looks. */
