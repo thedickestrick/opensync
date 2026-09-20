@@ -156,12 +156,13 @@ private fun headingLevel(line: String): Int {
     return if (n in 1..6 && line.length > n && line[n] == ' ') n else 0
 }
 
-/** `---`, `***` or `___` on a line of its own. */
-internal fun isHorizontalRule(trimmed: String): Boolean {
-    if (trimmed.length < 3) return false
-    val c = trimmed[0]
-    return (c == '-' || c == '*' || c == '_') && trimmed.all { it == c }
-}
+/**
+ * `---` on a line of its own. CommonMark also makes a rule out of `***` and `___`, but those are
+ * exactly what the Bold and Italic buttons leave behind on an empty line, and a rule flashing up
+ * when you press **B** is worse than not supporting a spelling nobody types.
+ */
+internal fun isHorizontalRule(trimmed: String): Boolean =
+    trimmed.length >= 3 && trimmed.all { it == '-' }
 
 private fun isTableRow(line: String): Boolean {
     val t = line.trim()

@@ -44,8 +44,41 @@ class MarkdownVisualTransformation(
     private val alt = SpanStyle(fontStyle = FontStyle.Italic, color = quoteColor)
     private val rule = SpanStyle(color = ruleColor)
 
+    private class Parsed(val text: AnnotatedString, val o2t: IntArray, val t2o: IntArray)
+
+    // filter() runs on every recomposition and caretStops() wants the same walk, so keep the last one.
+    private var cacheKey: String? = null
+    private var cacheValue: Parsed? = null
+
+    private fun parsed(src: String): Parsed {
+        cacheValue?.let { if (cacheKey == src) return it }
+        return parse(src).also { cacheKey = src; cacheValue = it }
+    }
+
     override fun filter(text: AnnotatedString): TransformedText {
-        val src = text.text
+        val p = parsed(text.text)
+        val srcLen = text.text.length
+        val tLen = p.text.length
+        val mapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int =
+                p.o2t[offset.coerceIn(0, srcLen)].coerceIn(0, tLen)
+
+            override fun transformedToOriginal(offset: Int): Int {
+                val o = offset.coerceIn(0, tLen)
+                return (if (o >= p.t2o.size) srcLen else p.t2o[o]).coerceIn(0, srcLen)
+            }
+        }
+        return TransformedText(p.text, mapping)
+    }
+
+    /**
+     * Original offset -> transformed offset, for every offset in [text]. Offsets that share a value
+     * are the same place on screen, which is how [reconcileMarkdownEdit] keeps the caret and the
+     * backspace key out of syntax nobody can see.
+     */
+    fun caretStops(text: String): IntArray = parsed(text).o2t
+
+    private fun parse(src: String): Parsed {
         val b = AnnotatedString.Builder()
         val o2t = IntArray(src.length + 1)          // original offset -> transformed offset
         val t2o = ArrayList<Int>(src.length + 8)    // transformed char index -> original offset
@@ -170,19 +203,7 @@ class MarkdownVisualTransformation(
             if (oi < src.length && src[oi] == '\n') keep(1, null)
         }
         o2t[src.length] = b.length
-
-        val transformed = b.toAnnotatedString()
-        val tLen = transformed.length
-        val mapping = object : OffsetMapping {
-            override fun originalToTransformed(offset: Int): Int =
-                o2t[offset.coerceIn(0, src.length)].coerceIn(0, tLen)
-
-            override fun transformedToOriginal(offset: Int): Int {
-                val o = offset.coerceIn(0, tLen)
-                return (if (o >= t2o.size) src.length else t2o[o]).coerceIn(0, src.length)
-            }
-        }
-        return TransformedText(transformed, mapping)
+        return Parsed(b.toAnnotatedString(), o2t, t2o.toIntArray())
     }
 
     private companion object {
@@ -233,7 +254,8 @@ fun MarkdownEditField(
         }
         BasicTextField(
             value = value,
-            onValueChange = onValueChange,
+            // The markers aren't drawn, so they shouldn't be steppable or deletable either.
+            onValueChange = { onValueChange(reconcileMarkdownEdit(value, it, transformation.caretStops(value.text))) },
             textStyle = body.copy(color = colors.onSurface),
             cursorBrush = SolidColor(colors.primary),
             visualTransformation = transformation,
