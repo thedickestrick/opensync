@@ -42,7 +42,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # packages: '' skips the action's default install of the obsolete 'tools' package, which
+      # Google has dropped from the SDK repo (sdkmanager now fails on it). The next step installs
+      # what we actually build against.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install SDK packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
