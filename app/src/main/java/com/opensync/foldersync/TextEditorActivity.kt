@@ -7,26 +7,15 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FormatBold
-import androidx.compose.material.icons.filled.FormatItalic
-import androidx.compose.material.icons.filled.FormatListBulleted
-import androidx.compose.material.icons.filled.FormatListNumbered
-import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,21 +32,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.share.ShareUtil
-import com.opensync.foldersync.ui.notes.MarkdownEditField
 import com.opensync.foldersync.ui.notes.MarkdownView
+import com.opensync.foldersync.ui.notes.RichNoteEditor
+import com.opensync.foldersync.ui.notes.RichNoteState
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Opens .txt / .md files handed to us via ACTION_VIEW in the Markdown editor (view/edit/save). */
+/** Opens .txt / .md files handed to us via ACTION_VIEW in the note editor (view/edit/save). */
 class TextEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,49 +117,22 @@ private fun TextEditorScreen(
     onBack: () -> Unit,
     initialPreview: Boolean = false
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var body by remember { mutableStateOf(TextFieldValue("")) }
+    val note = remember { RichNoteState() }
     var loaded by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf(initialPreview) }
     var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        body = TextFieldValue(read())
+        note.load(read())
         loaded = true
     }
 
-    fun wrap(pre: String, post: String) {
-        val s = body.text
-        val start = minOf(body.selection.start, body.selection.end)
-        val end = maxOf(body.selection.start, body.selection.end)
-        val sel = s.substring(start, end)
-        val nt = s.substring(0, start) + pre + sel + post + s.substring(end)
-        val cursor = if (sel.isEmpty()) start + pre.length else start + pre.length + sel.length + post.length
-        body = TextFieldValue(nt, TextRange(cursor))
-    }
-
-    fun linePrefix(prefix: String) {
-        val s = body.text
-        val pos = minOf(body.selection.start, body.selection.end)
-        val lineStart = s.lastIndexOf('\n', (pos - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
-        body = TextFieldValue(s.substring(0, lineStart) + prefix + s.substring(lineStart), TextRange(pos + prefix.length))
-    }
-
     fun toggleCheckbox(index: Int) {
-        val lines = body.text.split("\n").toMutableList()
-        if (index !in lines.indices) return
-        val l = lines[index]
-        lines[index] = when {
-            l.startsWith("- [ ] ") -> l.replaceFirst("- [ ] ", "- [x] ")
-            l.startsWith("- [x] ") -> l.replaceFirst("- [x] ", "- [ ] ")
-            l.startsWith("- [X] ") -> l.replaceFirst("- [X] ", "- [ ] ")
-            else -> l
-        }
-        val newText = lines.joinToString("\n")
-        body = body.copy(text = newText)
+        note.toggleCheckbox(index)
         // Checking a box in view mode should stick immediately.
-        if (preview) scope.launch { save(newText) }
+        if (preview) { val md = note.markdown; scope.launch { save(md) } }
     }
 
     Scaffold(
@@ -186,7 +147,7 @@ private fun TextEditorScreen(
                 actions = {
                     // Shares the text itself: this file may have arrived as another app's
                     // content:// Uri, which we can't legally re-grant to a third app.
-                    IconButton(onClick = { ShareUtil.shareText(context, body.text, title) }, enabled = loaded) {
+                    IconButton(onClick = { ShareUtil.shareText(context, note.markdown, title) }, enabled = loaded) {
                         Icon(Icons.Filled.Share, contentDescription = "Share")
                     }
                     IconButton(onClick = { preview = !preview }) {
@@ -198,8 +159,9 @@ private fun TextEditorScreen(
                     IconButton(
                         onClick = {
                             saving = true
+                            val md = note.markdown
                             scope.launch {
-                                val ok = save(body.text)
+                                val ok = save(md)
                                 saving = false
                                 Toast.makeText(
                                     context,
@@ -218,29 +180,15 @@ private fun TextEditorScreen(
             if (!loaded) {
                 CircularProgressIndicator(Modifier.padding(24.dp))
             } else if (preview) {
+                val markdown = remember(note.doc) { note.markdown }
                 MarkdownView(
-                    text = body.text,
+                    text = markdown,
                     baseDir = null,
                     modifier = Modifier.fillMaxSize(),
                     onToggleCheckbox = { toggleCheckbox(it) }
                 )
             } else {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                    IconButton(onClick = { linePrefix("# ") }) { Icon(Icons.Filled.Title, "Heading") }
-                    IconButton(onClick = { wrap("**", "**") }) { Icon(Icons.Filled.FormatBold, "Bold") }
-                    IconButton(onClick = { wrap("_", "_") }) { Icon(Icons.Filled.FormatItalic, "Italic") }
-                    IconButton(onClick = { wrap("`", "`") }) { Icon(Icons.Filled.Code, "Code") }
-                    IconButton(onClick = { linePrefix("- ") }) { Icon(Icons.Filled.FormatListBulleted, "Bullet") }
-                    IconButton(onClick = { linePrefix("1. ") }) { Icon(Icons.Filled.FormatListNumbered, "Numbered") }
-                    IconButton(onClick = { linePrefix("- [ ] ") }) { Icon(Icons.Filled.CheckBox, "Checklist") }
-                    IconButton(onClick = { linePrefix("> ") }) { Icon(Icons.Filled.FormatQuote, "Quote") }
-                }
-                // Same WYSIWYG surface as the notes editor: Markdown renders, markers stay hidden.
-                MarkdownEditField(
-                    value = body,
-                    onValueChange = { body = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 4.dp, bottom = 8.dp)
-                )
+                RichNoteEditor(state = note, modifier = Modifier.fillMaxWidth().weight(1f), placeholder = "Write…")
             }
         }
     }

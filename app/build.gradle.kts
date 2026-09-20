@@ -143,4 +143,7 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // JVM unit tests for the pure parts (the note document model).
+    testImplementation("junit:junit:4.13.2")
 }
