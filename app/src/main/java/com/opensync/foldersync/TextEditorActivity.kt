@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -176,7 +177,8 @@ private fun TextEditorScreen(
             )
         }
     ) { inner ->
-        Column(Modifier.padding(inner).fillMaxSize().padding(horizontal = 12.dp)) {
+        // Make room for the keyboard too, so a long note scrolls above it instead of under it.
+        Column(Modifier.padding(inner).imePadding().fillMaxSize().padding(horizontal = 12.dp)) {
             if (!loaded) {
                 CircularProgressIndicator(Modifier.padding(24.dp))
             } else if (preview) {

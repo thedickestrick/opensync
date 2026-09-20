@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -242,7 +243,9 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             )
         }
     ) { inner ->
-        Column(Modifier.padding(inner).fillMaxSize().padding(horizontal = 12.dp)) {
+        // Scaffold makes room for the system bars but not the keyboard: without imePadding a long
+        // note keeps its full height underneath it and the caret can end up out of sight.
+        Column(Modifier.padding(inner).imePadding().fillMaxSize().padding(horizontal = 12.dp)) {
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
