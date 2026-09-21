@@ -1,28 +1,54 @@
 package com.opensync.foldersync.widget
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.widget.Toast
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.update.AppPrefs
 import java.io.File
 
-internal data class NoteBrief(val title: String, val snippet: String, val path: String)
+/** [source] names the account notes folder the note lives in; blank for the folder on this phone. */
+internal data class NoteBrief(val title: String, val snippet: String, val path: String, val source: String = "")
 
 /** Shared helpers for the notes widgets: listing notes and pulling title/snippet/body text. */
 internal object WidgetNotes {
     private val EXTS = listOf(".md", ".txt", ".markdown")
 
-    /** Recent notes from the configured notes folder, newest first. */
+    private const val ACTION_REFRESH = "com.opensync.foldersync.widget.REFRESH"
+
+    /** For a widget's ⟳ button: a broadcast back to its own [provider], handled by [handleRefresh]. */
+    fun refreshIntent(context: Context, provider: Class<*>, widgetId: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            context, widgetId, Intent(context, provider).setAction(ACTION_REFRESH),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+    /** Returns true if [intent] was a ⟳ tap (and a sync of the account notes folders is now queued). */
+    fun handleRefresh(context: Context, intent: Intent): Boolean {
+        if (intent.action != ACTION_REFRESH) return false
+        NotesSyncWorker.syncNow(context)
+        Toast.makeText(context, "Syncing notes…", Toast.LENGTH_SHORT).show()
+        return true
+    }
+
+    /** Recent notes from the phone's notes folder and every account notes folder, newest first. */
     fun recent(context: Context, limit: Int = 200): List<NoteBrief> {
-        val dir = AppPrefs(context).notesDir
-        if (dir.isBlank()) return emptyList()
-        val root = File(dir)
-        if (!root.isDirectory) return emptyList()
+        val roots = buildList {
+            AppPrefs(context).notesDir.takeIf { it.isNotBlank() }?.let { add(File(it) to "") }
+            RemoteNotes.folders().forEach { add(RemoteNotes.mirrorDir(it) to it.name) }
+        }
         return runCatching {
-            root.walkTopDown().onFail { _, _ -> }.maxDepth(6)
-                .filter { f -> f.isFile && EXTS.any { f.name.lowercase().endsWith(it) } }
-                .sortedByDescending { it.lastModified() }
+            roots.filter { (root, _) -> root.isDirectory }
+                .flatMap { (root, source) ->
+                    root.walkTopDown().onFail { _, _ -> }.maxDepth(6)
+                        .filter { f -> f.isFile && EXTS.any { f.name.lowercase().endsWith(it) } }
+                        .map { it to source }
+                        .toList()
+                }
+                .sortedByDescending { (file, _) -> file.lastModified() }
                 .take(limit)
-                .map { NoteBrief(it.nameWithoutExtension, snippet(it), it.absolutePath) }
-                .toList()
+                .map { (file, source) -> NoteBrief(file.nameWithoutExtension, snippet(file), file.absolutePath, source) }
         }.getOrDefault(emptyList())
     }
 

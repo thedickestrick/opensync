@@ -7,17 +7,35 @@
     android:background="@drawable/widget_bg"
     android:padding="12dp">
 
-    <TextView
-        android:id="@+id/single_title"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:maxLines="1"
-        android:ellipsize="end"
-        android:text="Note"
-        android:textColor="#FFFFFFFF"
-        android:textSize="15sp"
-        android:textStyle="bold"
-        android:paddingBottom="4dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/single_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="Note"
+            android:textColor="#FFFFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <!-- Shown only for a note in an account notes folder: syncs it now. -->
+        <ImageView
+            android:id="@+id/single_refresh"
+            android:layout_width="34dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_widget_sync"
+            android:contentDescription="Sync notes"
+            android:paddingStart="10dp"
+            android:visibility="gone" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/single_body"

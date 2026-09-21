@@ -23,6 +23,17 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
+        <!-- Shown only when a notes folder lives on an account: syncs it now. -->
+        <ImageView
+            android:id="@+id/widget_refresh"
+            android:layout_width="36dp"
+            android:layout_height="28dp"
+            android:src="@drawable/ic_widget_sync"
+            android:contentDescription="Sync notes"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/widget_new"
             android:layout_width="wrap_content"

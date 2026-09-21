@@ -63,6 +63,7 @@ class SingleNoteWidgetConfigActivity : ComponentActivity() {
     private fun confirm(widgetId: Int, path: String) {
         AppPrefs(this).setSingleNoteWidgetPath(widgetId, path)
         SingleNoteWidgetProvider.render(this, AppWidgetManager.getInstance(this), widgetId)
+        NotesSyncWorker.reschedule(this)
         setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
         finish()
     }
@@ -101,6 +102,13 @@ private fun ChooseNoteScreen(onPick: (String) -> Unit, onCancel: () -> Unit) {
                             .padding(horizontal = 20.dp, vertical = 12.dp)
                     ) {
                         Text(note.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (note.source.isNotBlank()) {
+                            Text(
+                                "☁ ${note.source}", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.primary
+                            )
+                        }
                         if (note.snippet.isNotBlank()) {
                             Text(note.snippet, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }

@@ -8,6 +8,9 @@ import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.provider.StorageProvider
 import com.opensync.foldersync.sync.SyncEngine
 import com.opensync.foldersync.update.AppPrefs
+import com.opensync.foldersync.widget.NotesSyncWorker
+import com.opensync.foldersync.widget.NotesWidgetProvider
+import com.opensync.foldersync.widget.SingleNoteWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,7 +47,8 @@ data class RemoteNotesFolder(
  */
 object RemoteNotes {
 
-    data class SyncFinished(val folderId: Long, val error: String?)
+    /** [conflicts]: notes both sides had changed, whose older version was kept as a "(conflict …)" copy. */
+    data class SyncFinished(val folderId: Long, val error: String?, val conflicts: Int = 0)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val locks = ConcurrentHashMap<Long, Mutex>()
@@ -94,12 +98,14 @@ object RemoteNotes {
         val id = maxOf(System.currentTimeMillis(), (list.maxOfOrNull { it.id } ?: 0L) + 1)
         val folder = RemoteNotesFolder(id, name, accountId, clean)
         save(list + folder)
+        NotesSyncWorker.reschedule(Graph.appContext)
         return folder
     }
 
     /** Forgets the folder on this phone only — the notes on the account are left alone. */
     fun remove(folder: RemoteNotesFolder) {
         synchronized(this) { save(folders().filterNot { it.id == folder.id }) }
+        NotesSyncWorker.reschedule(Graph.appContext)
         scope.launch {
             lockFor(folder.id).withLock {
                 mirrorDir(folder).deleteRecursively()
@@ -115,6 +121,15 @@ object RemoteNotes {
         if (!abs.startsWith(root)) return null
         val id = abs.removePrefix(root).substringBefore(File.separatorChar).toLongOrNull() ?: return null
         return folders().firstOrNull { it.id == id }
+    }
+
+    /**
+     * For an editor about to save over a note that a sync replaced while it was being edited: the
+     * engine never saw two versions, so keep the one on disk as a conflict copy here instead.
+     */
+    fun keepConflictCopy(file: File) {
+        if (folderFor(file.absolutePath) == null || !file.isFile) return
+        runCatching { file.copyTo(File(file.parentFile, SyncEngine.conflictName(file.name)), overwrite = false) }
     }
 
     // --- syncing ---
@@ -144,13 +159,26 @@ object RemoteNotes {
         scope.launch {
             lockFor(folder.id).withLock {
                 if (removedDirs.isEmpty()) queued.remove(folder.id)
-                _syncing.update { it + folder.id }
-                val error = runCatching { sync(folder, removedDirs) }.exceptionOrNull()
-                    ?.let { "Couldn't sync '${folder.name}': ${it.message ?: it.javaClass.simpleName}" }
-                _syncing.update { it - folder.id }
-                _finished.emit(SyncFinished(folder.id, error))
+                syncLocked(folder, removedDirs)
             }
         }
+    }
+
+    /** Syncs every account notes folder and waits for it — what the background worker runs. */
+    suspend fun syncAll() {
+        folders().forEach { folder -> lockFor(folder.id).withLock { syncLocked(folder, emptyList()) } }
+    }
+
+    private suspend fun syncLocked(folder: RemoteNotesFolder, removedDirs: List<String>) {
+        _syncing.update { it + folder.id }
+        val outcome = runCatching { sync(folder, removedDirs) }
+        _syncing.update { it - folder.id }
+        val error = outcome.exceptionOrNull()
+            ?.let { "Couldn't sync '${folder.name}': ${it.message ?: it.javaClass.simpleName}" }
+        _finished.emit(SyncFinished(folder.id, error, outcome.getOrDefault(0)))
+        // A note pinned to the home screen may just have changed underneath its widget.
+        NotesWidgetProvider.notifyChanged(Graph.appContext)
+        SingleNoteWidgetProvider.notifyChanged(Graph.appContext)
     }
 
     private fun lockFor(id: Long) = locks.getOrPut(id) { Mutex() }
@@ -170,8 +198,9 @@ object RemoteNotes {
         deleteOrphans = true
     )
 
-    private suspend fun sync(folder: RemoteNotesFolder, removedDirs: List<String>) {
-        if (folders().none { it.id == folder.id }) return // removed while this sync was waiting
+    /** Returns how many notes were in conflict. */
+    private suspend fun sync(folder: RemoteNotesFolder, removedDirs: List<String>): Int {
+        if (folders().none { it.id == folder.id }) return 0 // removed while this sync was waiting
         val db = Graph.database
         val account = db.accountDao().getById(folder.accountId)
             ?: throw IllegalStateException("its account no longer exists")
@@ -189,9 +218,16 @@ object RemoteNotes {
             if (mirrorEmpty || remoteEmpty) prevState = emptyList()
         }
 
-        val result = SyncEngine(ProviderFactory.forLocal(mirror.absolutePath), remote(), pair, Graph.appContext.cacheDir)
-            .run(prevState, null)
+        fun engine() = SyncEngine(
+            ProviderFactory.forLocal(mirror.absolutePath), remote(), pair, Graph.appContext.cacheDir,
+            keepConflictCopies = true // a shared folder: never silently drop someone's edit
+        )
+        val result = engine().run(prevState, null)
         db.syncStateDao().replaceForPair(pair.id, result.newState)
+        if (result.conflicts > 0) {
+            // The conflict copies were made on one side only; a second pass carries them across now.
+            db.syncStateDao().replaceForPair(pair.id, engine().run(result.newState, null).newState)
+        }
 
         if (removedDirs.isNotEmpty()) {
             remote().use { p ->
@@ -202,6 +238,7 @@ object RemoteNotes {
                 removedDirs.forEach { rel -> runCatching { if (p.stat(rel)?.isDirectory == true) pruneEmpty(p, rel) } }
             }
         }
+        return result.conflicts
     }
 
     /** Deletes [rel] if there is no file anywhere beneath it; returns whether it went. */

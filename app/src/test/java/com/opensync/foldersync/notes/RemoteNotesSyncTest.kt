@@ -25,9 +25,51 @@ class RemoteNotesSyncTest {
         if (!::mirror.isInitialized) { mirror = tmp.newFolder("mirror"); server = tmp.newFolder("server") }
         val engine = SyncEngine(
             LocalProvider(mirror.absolutePath), LocalProvider(server.absolutePath),
-            RemoteNotes.syncPair(folder, mirror), tmp.root
+            RemoteNotes.syncPair(folder, mirror), tmp.root, keepConflictCopies = true
         )
         state = engine.run(state, null).newState
+    }
+
+    private fun conflictCopies(dir: File) = dir.listFiles()!!.filter { "(conflict " in it.name }
+
+    @Test
+    fun whenBothSidesEditANoteTheOlderVersionIsKeptAsAConflictCopyOnBothSides() {
+        sync()
+        File(mirror, "list.md").writeText("milk")
+        sync()
+        val now = System.currentTimeMillis()
+        File(mirror, "list.md").apply { writeText("milk, eggs (me)"); setLastModified(now + 10_000) }
+        File(server, "list.md").apply { writeText("milk, bread (wife, later)"); setLastModified(now + 20_000) }
+        sync() // resolves: the later edit wins, the other is renamed aside
+        sync() // carries the conflict copy across
+        for (side in listOf(mirror, server)) {
+            assertEquals("milk, bread (wife, later)", File(side, "list.md").readText())
+            val copies = conflictCopies(side)
+            assertEquals(1, copies.size)
+            assertEquals("milk, eggs (me)", copies.single().readText())
+            assertTrue(copies.single().name.endsWith(".md"))
+        }
+    }
+
+    @Test
+    fun identicalFilesThatWereNeverSyncedAreNotAConflict() {
+        sync()
+        File(mirror, "same.md").apply { writeText("same text"); setLastModified(1_700_000_000_000) }
+        File(server, "same.md").apply { writeText("same text"); setLastModified(1_700_000_900_000) }
+        sync()
+        assertTrue(conflictCopies(mirror).isEmpty() && conflictCopies(server).isEmpty())
+        assertEquals(1, state.size)
+    }
+
+    @Test
+    fun anEditOnOneSideOnlyIsNeverAConflict() {
+        sync()
+        File(mirror, "note.md").writeText("v1")
+        sync()
+        File(server, "note.md").apply { writeText("v2 from the other phone"); setLastModified(System.currentTimeMillis() + 10_000) }
+        sync()
+        assertEquals("v2 from the other phone", File(mirror, "note.md").readText())
+        assertTrue(conflictCopies(mirror).isEmpty() && conflictCopies(server).isEmpty())
     }
 
     @Test

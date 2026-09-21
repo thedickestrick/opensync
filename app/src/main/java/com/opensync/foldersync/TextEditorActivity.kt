@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.notes.MarkdownView
@@ -44,6 +45,9 @@ import com.opensync.foldersync.ui.notes.RichNoteEditor
 import com.opensync.foldersync.ui.notes.RichNoteState
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -60,14 +64,20 @@ class TextEditorActivity : ComponentActivity() {
         // data files (.json/.csv/…) open in edit.
         val startInPreview = intent?.getBooleanExtra("view_mode", false) == true ||
             name.lowercase().let { it.endsWith(".md") || it.endsWith(".markdown") || it.endsWith(".txt") }
+        // A note in an account notes folder (typically opened from a home-screen widget) may be stale:
+        // sync now, and let the screen pick up whatever that brings in.
+        val sharedFolder = uri.takeIf { it.scheme == "file" }?.path?.let { RemoteNotes.folderFor(it) }
+        sharedFolder?.let { RemoteNotes.requestSync(it) }
+        val synced = sharedFolder?.let { f -> RemoteNotes.finished.filter { it.folderId == f.id }.map { } }
         setContent {
             OpenSyncTheme {
                 Surface(Modifier.fillMaxSize()) {
                     TextEditorScreen(
                         title = name,
                         initialPreview = startInPreview,
+                        synced = synced,
                         read = { readText(uri) },
-                        save = { text -> writeText(uri, text) },
+                        save = { text, keepDiskVersion -> writeText(uri, text, keepDiskVersion) },
                         onBack = { finish() }
                     )
                 }
@@ -96,7 +106,8 @@ class TextEditorActivity : ComponentActivity() {
     }
 
     /** Returns null on success, or a message saying why the save failed. */
-    private suspend fun writeText(uri: Uri, text: String): String? = withContext(Dispatchers.IO) {
+    private suspend fun writeText(uri: Uri, text: String, keepDiskVersion: Boolean): String? = withContext(Dispatchers.IO) {
+        if (keepDiskVersion && uri.scheme == "file") uri.path?.let { RemoteNotes.keepConflictCopy(java.io.File(it)) }
         val wrote = runCatching {
             (contentResolver.openOutputStream(uri, "wt") ?: return@runCatching false).use {
                 it.write(text.toByteArray(Charsets.UTF_8))
@@ -134,9 +145,12 @@ class TextEditorActivity : ComponentActivity() {
 private fun TextEditorScreen(
     title: String,
     read: suspend () -> String,
-    save: suspend (String) -> String?,
+    /** (text, keepDiskVersion) — the flag asks for the file's current content to be kept as a conflict copy. */
+    save: suspend (String, Boolean) -> String?,
     onBack: () -> Unit,
-    initialPreview: Boolean = false
+    initialPreview: Boolean = false,
+    /** Fires whenever the file may have been replaced underneath us by a sync. */
+    synced: Flow<Unit>? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -144,16 +158,45 @@ private fun TextEditorScreen(
     var loaded by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf(initialPreview) }
     var saving by remember { mutableStateOf(false) }
+    // What the note looked like when it last matched the file; differing from it means unsaved typing.
+    var cleanMarkdown by remember { mutableStateOf("") }
+    var replacedWhileEditing by remember { mutableStateOf(false) }
+
+    /** Returns the error, or null once [md] is safely in the file. */
+    suspend fun saveNow(md: String): String? {
+        val error = save(md, replacedWhileEditing)
+        if (error == null) { cleanMarkdown = md; replacedWhileEditing = false }
+        return error
+    }
 
     LaunchedEffect(Unit) {
         note.load(read())
+        cleanMarkdown = note.markdown
         loaded = true
+    }
+    LaunchedEffect(synced) {
+        synced?.collect {
+            // Never pull the text out from under someone who is typing; their save will sort it out.
+            if (!loaded) return@collect
+            val fresh = read()
+            if (fresh.isEmpty() || RichNoteState().apply { load(fresh) }.markdown == cleanMarkdown) return@collect
+            if (note.markdown != cleanMarkdown) {
+                // …but remember the file is no longer what they started from, so saving keeps both.
+                replacedWhileEditing = true
+                return@collect
+            }
+            note.load(fresh)
+            cleanMarkdown = note.markdown
+        }
     }
 
     fun toggleCheckbox(index: Int) {
         note.toggleCheckbox(index)
         // Checking a box in view mode should stick immediately.
-        if (preview) { val md = note.markdown; scope.launch { save(md) } }
+        if (preview) {
+            val md = note.markdown
+            scope.launch { saveNow(md) }
+        }
     }
 
     Scaffold(
@@ -182,7 +225,7 @@ private fun TextEditorScreen(
                             saving = true
                             val md = note.markdown
                             scope.launch {
-                                val error = save(md)
+                                val error = saveNow(md)
                                 saving = false
                                 Toast.makeText(context, error ?: "Saved", Toast.LENGTH_LONG).show()
                             }

@@ -182,7 +182,10 @@ class NotesViewModel : ViewModel() {
         viewModelScope.launch {
             RemoteNotes.finished.collect { done ->
                 if (done.folderId != _state.value.activeRemote?.id) return@collect
-                if (done.error != null) _state.value = _state.value.copy(error = done.error)
+                val message = done.error ?: if (done.conflicts > 0) {
+                    "${done.conflicts} note(s) were changed on both sides — the older version is kept as a \"(conflict …)\" copy"
+                } else null
+                if (message != null) _state.value = _state.value.copy(error = message)
                 rescan()
             }
         }

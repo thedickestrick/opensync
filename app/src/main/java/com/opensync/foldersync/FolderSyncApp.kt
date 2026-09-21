@@ -23,6 +23,7 @@ class FolderSyncApp : Application(), Configuration.Provider, ImageLoaderFactory 
         // Refresh WorkManager schedules (recomputes next daily runs after reboot/reinstall).
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             runCatching { Graph.syncManager.rescheduleAll() }
+            runCatching { com.opensync.foldersync.widget.NotesSyncWorker.reschedule(this@FolderSyncApp) }
         }
     }
 

@@ -9,6 +9,9 @@ import com.opensync.foldersync.provider.RemoteFile
 import com.opensync.foldersync.provider.StorageProvider
 import com.opensync.foldersync.util.PathUtil
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -20,7 +23,13 @@ class SyncEngine(
     private val local: StorageProvider,
     private val remote: StorageProvider,
     private val pair: FolderPair,
-    private val tempDir: File
+    private val tempDir: File,
+    /**
+     * When both sides changed a file, keep the version that loses next to it as
+     * "name (conflict <time>).ext" instead of overwriting it. Used for shared notes folders, where
+     * the loser is somebody's writing; it reaches the other side like any new file on the next run.
+     */
+    private val keepConflictCopies: Boolean = false
 ) {
 
     fun interface Progress {
@@ -236,14 +245,40 @@ class SyncEngine(
         progress: Progress?, idx: Int, total: Int,
         newState: MutableMap<String, SyncStateEntry>
     ) {
+        // Two sides that were changed to the same thing (or were never synced but already match)
+        // aren't in conflict at all — don't litter the folder with copies of identical files.
+        if (keepConflictCopies && sameContent(rel, l, r)) {
+            record(newState, rel, l.size, l.modifiedTime, r.size, r.modifiedTime)
+            return
+        }
         conflicts++
-        when (pair.conflictRule) {
-            ConflictRule.NEWER_WINS ->
-                if (l.modifiedTime >= r.modifiedTime) uploadLocalToRemote(rel, l, progress, idx, total, newState)
-                else downloadRemoteToLocal(rel, r, progress, idx, total, newState)
-            ConflictRule.LOCAL_WINS -> uploadLocalToRemote(rel, l, progress, idx, total, newState)
-            ConflictRule.REMOTE_WINS -> downloadRemoteToLocal(rel, r, progress, idx, total, newState)
-            ConflictRule.SKIP -> { /* leave both; no state so it is re-checked next run */ }
+        val localWins = when (pair.conflictRule) {
+            ConflictRule.NEWER_WINS -> l.modifiedTime >= r.modifiedTime
+            ConflictRule.LOCAL_WINS -> true
+            ConflictRule.REMOTE_WINS -> false
+            ConflictRule.SKIP -> return // leave both; no state so it is re-checked next run
+        }
+        if (keepConflictCopies) {
+            val loser = if (localWins) remote else local
+            loser.rename(rel, conflictName(rel))
+        }
+        if (localWins) uploadLocalToRemote(rel, l, progress, idx, total, newState)
+        else downloadRemoteToLocal(rel, r, progress, idx, total, newState)
+    }
+
+    /** Byte-for-byte comparison, for files small enough that fetching the remote one is cheap. */
+    private fun sameContent(rel: String, l: RemoteFile, r: RemoteFile): Boolean {
+        if (l.size != r.size || l.size > MAX_COMPARE_BYTES) return false
+        val a = File.createTempFile("osync", ".cmp", tempDir)
+        val b = File.createTempFile("osync", ".cmp", tempDir)
+        return try {
+            local.download(rel, a)
+            remote.download(rel, b)
+            a.readBytes().contentEquals(b.readBytes())
+        } catch (e: Exception) {
+            false
+        } finally {
+            a.delete(); b.delete()
         }
     }
 
@@ -307,5 +342,16 @@ class SyncEngine(
     companion object {
         /** Filesystem/mtime granularity tolerance in milliseconds. */
         private const val TOL = 2000L
+        private const val MAX_COMPARE_BYTES = 1L shl 20
+
+        /** "dir/note.md" → "dir/note (conflict 2026-01-31 14.05.09).md" (no ':' — SMB can't store one). */
+        fun conflictName(rel: String): String {
+            val stamp = SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.US).format(Date())
+            val name = PathUtil.name(rel)
+            val dot = name.lastIndexOf('.')
+            val renamed = if (dot > 0) "${name.substring(0, dot)} (conflict $stamp)${name.substring(dot)}"
+            else "$name (conflict $stamp)"
+            return rel.removeSuffix(name) + renamed
+        }
     }
 }

@@ -6,17 +6,24 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.view.View
 import android.widget.RemoteViews
 import com.opensync.foldersync.R
 import com.opensync.foldersync.TextEditorActivity
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.update.AppPrefs
 import java.io.File
 
 /** Home-screen widget pinned to a single note chosen at placement (SingleNoteWidgetConfigActivity). */
 class SingleNoteWidgetProvider : AppWidgetProvider() {
 
+    override fun onReceive(context: Context, intent: Intent) {
+        if (!WidgetNotes.handleRefresh(context, intent)) super.onReceive(context, intent)
+    }
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         for (id in ids) render(context, manager, id)
+        NotesSyncWorker.reschedule(context)
     }
 
     /** Forget the note→widget mapping when a widget is removed. */
@@ -24,6 +31,8 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
         val prefs = AppPrefs(context)
         for (id in ids) prefs.removeSingleNoteWidget(id)
     }
+
+    override fun onDisabled(context: Context) = NotesSyncWorker.reschedule(context)
 
     companion object {
         /** Re-render every placed single-note widget (call after notes change). */
@@ -52,7 +61,15 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )
                 views.setOnClickPendingIntent(R.id.single_root, open)
+                // A note in an account notes folder can change on the server: offer a sync button.
+                val shared = RemoteNotes.folderFor(path) != null
+                views.setViewVisibility(R.id.single_refresh, if (shared) View.VISIBLE else View.GONE)
+                views.setOnClickPendingIntent(
+                    R.id.single_refresh,
+                    WidgetNotes.refreshIntent(context, SingleNoteWidgetProvider::class.java, id)
+                )
             } else {
+                views.setViewVisibility(R.id.single_refresh, View.GONE)
                 views.setTextViewText(R.id.single_title, "Tap to choose a note")
                 views.setTextViewText(R.id.single_body, "")
                 val configure = PendingIntent.getActivity(

@@ -51,6 +51,7 @@ import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -78,11 +79,34 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var showVaultConfirm by remember { mutableStateOf(false) }
     var overflow by remember { mutableStateOf(false) }
 
+    // What the note looked like when it last matched the file; differing from it means unsaved typing.
+    var cleanMarkdown by remember { mutableStateOf("") }
+    // A sync replaced the file while it was being edited: saving must keep that version too.
+    var replacedWhileEditing by remember { mutableStateOf(false) }
+
     LaunchedEffect(path) {
         if (existing != null) {
             val txt = withContext(Dispatchers.IO) { runCatching { existing.readText() }.getOrDefault("") }
             note.load(txt)
+            cleanMarkdown = note.markdown
             loaded = true
+        }
+    }
+    // A note in an account notes folder may be stale: sync now, and take what that brings in — unless
+    // the user has started typing, in which case their text is never pulled out from under them.
+    LaunchedEffect(path) {
+        val folder = existing?.let { RemoteNotes.folderFor(it.absolutePath) } ?: return@LaunchedEffect
+        RemoteNotes.requestSync(folder)
+        RemoteNotes.finished.filter { it.folderId == folder.id }.collect {
+            if (!loaded) return@collect
+            val fresh = withContext(Dispatchers.IO) { runCatching { existing.readText() }.getOrDefault("") }
+            if (fresh.isEmpty() || RichNoteState().apply { load(fresh) }.markdown == cleanMarkdown) return@collect
+            if (note.markdown != cleanMarkdown) {
+                replacedWhileEditing = true
+                return@collect
+            }
+            note.load(fresh)
+            cleanMarkdown = note.markdown
         }
     }
 
@@ -92,8 +116,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         val target = existing
         if (preview && target != null) {
             val md = note.markdown
+            val keepDiskVersion = replacedWhileEditing
             scope.launch(Dispatchers.IO) {
-                runCatching { target.writeText(md) }
+                if (keepDiskVersion) RemoteNotes.keepConflictCopy(target)
+                if (runCatching { target.writeText(md) }.isSuccess) {
+                    withContext(Dispatchers.Main) { cleanMarkdown = md; replacedWhileEditing = false }
+                }
                 RemoteNotes.notifyChanged(target.absolutePath)
                 withContext(Dispatchers.Main) {
                     com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
@@ -150,10 +178,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         val safe = title.trim().ifBlank { "Note" }.replace(Regex("[/\\\\:*?\"<>|]"), "_")
         val ext = existing?.extension?.takeIf { it.isNotBlank() } ?: "md"
         val md = note.markdown
+        val keepDiskVersion = replacedWhileEditing
         saving = true
         scope.launch {
             val savedPath = withContext(Dispatchers.IO) {
                 runCatching {
+                    if (keepDiskVersion && existing != null) RemoteNotes.keepConflictCopy(existing)
                     val target = uniqueIfNeeded(File(targetDir, "$safe.$ext"), existing)
                     target.writeText(md)
                     if (existing != null && existing.absolutePath != target.absolutePath) existing.delete()
@@ -162,6 +192,8 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
             saving = false
             if (savedPath != null) {
+                cleanMarkdown = md
+                replacedWhileEditing = false
                 RemoteNotes.notifyChanged(savedPath) // a note in an account folder goes up to the server now
                 com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
                 com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)

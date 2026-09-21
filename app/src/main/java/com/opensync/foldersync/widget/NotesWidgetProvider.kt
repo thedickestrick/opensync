@@ -6,17 +6,26 @@ import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.view.View
 import android.widget.RemoteViews
 import com.opensync.foldersync.MainActivity
 import com.opensync.foldersync.R
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.TextEditorActivity
 
 /** Home-screen widget listing recent notes; resizable (see res/xml/notes_widget_info.xml). */
 class NotesWidgetProvider : AppWidgetProvider() {
 
+    override fun onReceive(context: Context, intent: Intent) {
+        if (!WidgetNotes.handleRefresh(context, intent)) super.onReceive(context, intent)
+    }
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         for (id in ids) updateWidget(context, manager, id)
+        NotesSyncWorker.reschedule(context)
     }
+
+    override fun onDisabled(context: Context) = NotesSyncWorker.reschedule(context)
 
     companion object {
         /** Rebuild all placed widgets (refreshes their list + tap targets) after notes change. */
@@ -48,6 +57,13 @@ class NotesWidgetProvider : AppWidgetProvider() {
             )
             views.setOnClickPendingIntent(R.id.widget_header, openApp)
             views.setOnClickPendingIntent(R.id.widget_empty, openApp)
+
+            // With a notes folder on an account, the list can change on the server: offer a sync button.
+            val shared = RemoteNotes.folders().isNotEmpty()
+            views.setViewVisibility(R.id.widget_refresh, if (shared) View.VISIBLE else View.GONE)
+            views.setOnClickPendingIntent(
+                R.id.widget_refresh, WidgetNotes.refreshIntent(context, NotesWidgetProvider::class.java, id)
+            )
 
             // Tapping a note opens it in the text editor (the item supplies note_path via fill-in intent).
             val itemTemplate = PendingIntent.getActivity(

@@ -31,7 +31,10 @@ private class NotesRemoteViewsFactory(
         val rv = RemoteViews(context.packageName, R.layout.widget_note_item)
         if (note != null) {
             rv.setTextViewText(R.id.item_title, note.title)
-            rv.setTextViewText(R.id.item_snippet, note.snippet)
+            // Say which account notes folder a note is from; notes on the phone need no label.
+            val snippet = listOf(note.source.takeIf { it.isNotBlank() }?.let { "☁ $it" }, note.snippet)
+                .filter { !it.isNullOrBlank() }.joinToString("  ·  ")
+            rv.setTextViewText(R.id.item_snippet, snippet)
             rv.setOnClickFillInIntent(R.id.item_root, Intent().putExtra("note_path", note.path))
         }
         return rv
