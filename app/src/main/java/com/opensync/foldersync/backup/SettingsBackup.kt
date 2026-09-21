@@ -2,6 +2,7 @@ package com.opensync.foldersync.backup
 
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.crypto.CryptoManager
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.update.AppPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,9 +33,16 @@ object SettingsBackup {
         }
         val pairs = JSONArray()
         db.folderPairDao().getAll().forEach { pairs.put(SettingsBackupCodec.pairToJson(it)) }
+        val notesFolders = JSONArray()
+        RemoteNotes.folders().forEach {
+            notesFolders.put(
+                JSONObject().put("name", it.name).put("accountId", it.accountId).put("remoteFolder", it.remoteFolder)
+            )
+        }
         val payload = JSONObject()
             .put("accounts", accounts)
             .put("pairs", pairs)
+            .put("notesFolders", notesFolders)
             .put(
                 "prefs",
                 JSONObject()
@@ -92,6 +100,15 @@ object SettingsBackup {
                 db.folderPairDao().insert(pair)
             }
             pairCount++
+        }
+
+        // Notes folders on an account: only the pointer travels — the notes come down on first open.
+        payload.optJSONArray("notesFolders")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val accountId = idMap[o.optLong("accountId")] ?: continue
+                RemoteNotes.add(o.getString("name"), accountId, o.optString("remoteFolder"))
+            }
         }
 
         payload.optJSONObject("prefs")?.let { p ->

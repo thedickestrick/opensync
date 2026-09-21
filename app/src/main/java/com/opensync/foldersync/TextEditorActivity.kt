@@ -106,6 +106,8 @@ class TextEditorActivity : ComponentActivity() {
         if (!wrote) return@withContext "Couldn't save — the file may be read-only"
         // A file opened from a remote account (SMB, FTP, …) is only a cache copy: push it back.
         uploadToRemote(uri)?.let { return@withContext it }
+        // A note inside an account notes folder (opened from a widget, say) syncs like any other edit.
+        if (uri.scheme == "file") uri.path?.let { com.opensync.foldersync.notes.RemoteNotes.notifyChanged(it) }
         com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
         com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(applicationContext)
         null

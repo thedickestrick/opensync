@@ -465,7 +465,7 @@ private fun FolderPickerDialog(
 
 /** Browses folders on a remote account (SMB shows shares first) so the user can pick a path. */
 @Composable
-private fun RemoteFolderPickerDialog(
+internal fun RemoteFolderPickerDialog(
     account: Account,
     initialPath: String,
     onDismiss: () -> Unit,

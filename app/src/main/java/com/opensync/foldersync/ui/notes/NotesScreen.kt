@@ -28,8 +28,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
@@ -57,7 +60,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -89,7 +94,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.SortBy
+import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.notes.NoteConverter
+import com.opensync.foldersync.notes.RemoteNotes
+import com.opensync.foldersync.notes.RemoteNotesFolder
+import com.opensync.foldersync.ui.pairs.RemoteFolderPickerDialog
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.formatBytes
 import com.opensync.foldersync.ui.formatTimestamp
@@ -128,7 +137,13 @@ data class NotesState(
     val selection: Set<String> = emptySet(),
     val clipboard: List<String> = emptyList(),
     val clipboardCut: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** The notes folder on this phone ([rootDir] is this, unless an account folder is showing). */
+    val localRoot: String = "",
+    val remoteFolders: List<RemoteNotesFolder> = emptyList(),
+    /** The account notes folder being shown, or null for the one on this phone. */
+    val activeRemote: RemoteNotesFolder? = null,
+    val syncing: Boolean = false
 ) {
     val selectionMode get() = selection.isNotEmpty()
     val canGoUp get() = !includeSub && currentDir.isNotBlank() && currentDir != rootDir
@@ -141,20 +156,83 @@ class NotesViewModel : ViewModel() {
     private var rawEntries: List<NoteEntry> = emptyList()
     private var pinned: Set<String> = prefs.pinnedNotes
 
+    /** Accounts an additional notes folder can live on. */
+    val accounts = Graph.database.accountDao().observeAll()
+
     /** Remembered list scroll position, so opening a note and coming back keeps your place. */
     var listIndex = 0
     var listOffset = 0
 
     init {
+        val folders = RemoteNotes.folders()
+        val active = folders.firstOrNull { it.id == prefs.activeNotesFolder }
+        val root = active?.let { RemoteNotes.mirrorDir(it).absolutePath } ?: prefs.notesDir
+        _state.value = NotesState(
+            rootDir = root, currentDir = root,
+            localRoot = prefs.notesDir, remoteFolders = folders, activeRemote = active
+        )
+        if (root.isNotBlank()) refresh()
+
+        viewModelScope.launch {
+            RemoteNotes.syncing.collect { ids ->
+                _state.value = _state.value.let { it.copy(syncing = it.activeRemote?.id in ids) }
+            }
+        }
+        // A finished sync may have brought notes in (or taken some away): show what's there now.
+        viewModelScope.launch {
+            RemoteNotes.finished.collect { done ->
+                if (done.folderId != _state.value.activeRemote?.id) return@collect
+                if (done.error != null) _state.value = _state.value.copy(error = done.error)
+                rescan()
+            }
+        }
+    }
+
+    /** Choose the notes folder on this phone, and show it. */
+    fun setRoot(path: String) {
+        prefs.notesDir = path
+        _state.value = _state.value.copy(localRoot = path)
+        showLocal()
+    }
+
+    fun showLocal() {
+        prefs.activeNotesFolder = 0L
         val root = prefs.notesDir
-        _state.value = NotesState(rootDir = root, currentDir = root)
+        _state.value = _state.value.copy(
+            rootDir = root, currentDir = root, activeRemote = null, syncing = false,
+            entries = emptyList(), selection = emptySet()
+        )
+        rawEntries = emptyList()
         if (root.isNotBlank()) rescan()
     }
 
-    fun setRoot(path: String) {
-        prefs.notesDir = path
-        _state.value = _state.value.copy(rootDir = path, currentDir = path, selection = emptySet())
+    fun showRemote(folder: RemoteNotesFolder) {
+        prefs.activeNotesFolder = folder.id
+        val root = RemoteNotes.mirrorDir(folder).apply { mkdirs() }.absolutePath
+        _state.value = _state.value.copy(
+            rootDir = root, currentDir = root, activeRemote = folder,
+            entries = emptyList(), selection = emptySet()
+        )
+        rawEntries = emptyList()
+        refresh()
+    }
+
+    fun addRemote(name: String, accountId: Long, remoteFolder: String) {
+        val folder = RemoteNotes.add(name, accountId, remoteFolder)
+        _state.value = _state.value.copy(remoteFolders = RemoteNotes.folders())
+        showRemote(folder)
+    }
+
+    fun removeRemote(folder: RemoteNotesFolder) {
+        RemoteNotes.remove(folder)
+        _state.value = _state.value.copy(remoteFolders = RemoteNotes.folders())
+        if (_state.value.activeRemote?.id == folder.id) showLocal()
+    }
+
+    /** Re-list the folder and, if it lives on an account, sync it with the account first. */
+    fun refresh() {
         rescan()
+        _state.value.activeRemote?.let { RemoteNotes.requestSync(it) }
     }
 
     fun openDir(path: String) {
@@ -176,7 +254,10 @@ class NotesViewModel : ViewModel() {
         if (s.currentDir.isBlank()) return
         _state.value = s.copy(loading = true)
         viewModelScope.launch {
-            rawEntries = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
+            val listed = withContext(Dispatchers.IO) { listDir(File(s.currentDir), s.includeSub) }
+            // The folder may have been switched while this was listing the old one.
+            if (_state.value.currentDir != s.currentDir) return@launch
+            rawEntries = listed
             pushSorted()
             com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(Graph.appContext)
             com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(Graph.appContext)
@@ -298,8 +379,11 @@ class NotesViewModel : ViewModel() {
         val dest = File(s.currentDir)
         viewModelScope.launch {
             val error = withContext(Dispatchers.IO) {
+                val movedDirs = if (s.clipboardCut) s.clipboard.filter { File(it).isDirectory } else emptyList()
                 runCatching {
                     s.clipboard.forEach { pasteInto(dest, File(it), s.clipboardCut) }
+                }.also {
+                    RemoteNotes.touched(s.clipboard + dest.absolutePath, movedDirs.filterNot { File(it).exists() })
                 }.exceptionOrNull()?.message
             }
             _state.value = _state.value.copy(clipboard = emptyList(), clipboardCut = false, error = error)
@@ -312,7 +396,10 @@ class NotesViewModel : ViewModel() {
         if (paths.isEmpty()) return
         viewModelScope.launch {
             val error = withContext(Dispatchers.IO) {
-                runCatching { paths.forEach { File(it).deleteRecursively() } }.exceptionOrNull()?.message
+                val dirs = paths.filter { File(it).isDirectory }
+                runCatching { paths.forEach { File(it).deleteRecursively() } }
+                    .also { RemoteNotes.touched(paths, dirs.filterNot { File(it).exists() }) }
+                    .exceptionOrNull()?.message
             }
             _state.value = _state.value.copy(selection = emptySet(), error = error)
             rescan()
@@ -333,7 +420,7 @@ class NotesViewModel : ViewModel() {
                     val error = withContext(Dispatchers.IO) {
                         runCatching {
                             paths.forEach { VaultManager.importFile(Uri.fromFile(File(it))) }
-                        }.exceptionOrNull()?.message
+                        }.also { RemoteNotes.touched(paths) }.exceptionOrNull()?.message
                     }
                     _state.value = _state.value.copy(selection = emptySet(), error = error)
                     rescan()
@@ -349,7 +436,10 @@ class NotesViewModel : ViewModel() {
             val error = withContext(Dispatchers.IO) {
                 runCatching {
                     val src = File(path)
-                    src.renameTo(File(src.parentFile, clean))
+                    val wasDir = src.isDirectory
+                    if (src.renameTo(File(src.parentFile, clean))) {
+                        RemoteNotes.touched(listOf(path), if (wasDir) listOf(path) else emptyList())
+                    }
                 }.exceptionOrNull()?.message
             }
             _state.value = _state.value.copy(selection = emptySet(), error = error)
@@ -362,6 +452,7 @@ class NotesViewModel : ViewModel() {
         if (clean.isBlank()) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) { runCatching { File(_state.value.currentDir, clean).mkdirs() } }
+            RemoteNotes.notifyChanged(_state.value.currentDir)
             rescan()
         }
     }
@@ -381,6 +472,7 @@ class NotesViewModel : ViewModel() {
                 paths.count { NoteConverter.toMarkdown(Graph.appContext, File(it)) != null }
             }
             _state.value = _state.value.copy(error = "Converted $made note(s) to editable .md")
+            RemoteNotes.notifyChanged(_state.value.currentDir)
             rescan()
         }
     }
@@ -458,6 +550,8 @@ fun NotesScreen(
     }
 
     var showRootPicker by remember { mutableStateOf(false) }
+    var showFolders by remember { mutableStateOf(false) }
+    var showAddRemote by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -473,7 +567,7 @@ fun NotesScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.rescan()
+            if (event == Lifecycle.Event.ON_RESUME) vm.refresh()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -514,7 +608,20 @@ fun NotesScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(if (state.rootDir.isBlank()) "Notes" else titleFor(state)) },
+                    title = {
+                        // The title doubles as the switcher between the phone's and the accounts' notes folders.
+                        Row(
+                            Modifier.clickable { showFolders = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (state.rootDir.isBlank()) "Notes" else titleFor(state),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Icon(Icons.Filled.ArrowDropDown, contentDescription = "Notes folders")
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = openDrawer) { Icon(Icons.Filled.Menu, contentDescription = "Menu") }
                     },
@@ -562,12 +669,12 @@ fun NotesScreen(
                                     onClick = { menuOpen = false; vm.convertImported() }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Change notes folder") },
-                                    onClick = { menuOpen = false; showRootPicker = true }
+                                    text = { Text("Notes folders…") },
+                                    onClick = { menuOpen = false; showFolders = true }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Rescan") },
-                                    onClick = { menuOpen = false; vm.rescan() }
+                                    text = { Text(if (state.activeRemote != null) "Sync now" else "Rescan") },
+                                    onClick = { menuOpen = false; vm.refresh() }
                                 )
                             }
                         }
@@ -596,10 +703,16 @@ fun NotesScreen(
     ) { inner ->
         Box(Modifier.padding(inner).fillMaxSize()) {
             when {
-                state.rootDir.isBlank() -> SetupCard(Modifier.align(Alignment.Center)) { showRootPicker = true }
+                state.rootDir.isBlank() -> SetupCard(
+                    Modifier.align(Alignment.Center),
+                    onChoose = { showRootPicker = true },
+                    onChooseRemote = { showAddRemote = true }
+                )
                 // Only take over the screen with a spinner on the first load — a refresh (e.g. on
                 // resume) keeps the list composed so your scroll position isn't thrown away.
-                state.loading && state.entries.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                // (An account folder opened for the first time is empty until its first sync lands.)
+                (state.loading || state.syncing) && state.entries.isEmpty() ->
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else -> {
                   LazyColumn(
                     modifier = Modifier.fillMaxSize().verticalScrollbar(notesListState),
@@ -651,14 +764,43 @@ fun NotesScreen(
                   }
                 }
             }
+            if (state.syncing && state.entries.isNotEmpty()) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+            }
         }
     }
 
     if (showRootPicker) {
         NotesFolderPickerDialog(
-            initial = state.rootDir,
+            initial = state.localRoot,
             onDismiss = { showRootPicker = false },
             onSelect = { path -> vm.setRoot(path); showRootPicker = false }
+        )
+    }
+    if (showFolders) {
+        NotesFoldersDialog(
+            state = state,
+            onDismiss = { showFolders = false },
+            onShowLocal = {
+                showFolders = false
+                if (state.localRoot.isBlank()) showRootPicker = true else vm.showLocal()
+            },
+            onChangeLocal = { showFolders = false; showRootPicker = true },
+            onShowRemote = { showFolders = false; vm.showRemote(it) },
+            onRemoveRemote = { vm.removeRemote(it) },
+            onAddRemote = { showFolders = false; showAddRemote = true }
+        )
+    }
+    if (showAddRemote) {
+        val accounts by vm.accounts.collectAsState(initial = null)
+        AddRemoteNotesFolder(
+            accounts = accounts,
+            onDismiss = { showAddRemote = false },
+            onAdd = { account, folder ->
+                showAddRemote = false
+                val leaf = folder.trim('/').substringAfterLast('/')
+                vm.addRemote(if (leaf.isBlank()) account.name else "$leaf (${account.name})", account.id, folder)
+            }
         )
     }
     if (showNewFolder) {
@@ -766,7 +908,7 @@ private fun noteMeta(entry: NoteEntry): String = buildString {
 }
 
 private fun titleFor(state: NotesState): String {
-    if (state.currentDir == state.rootDir) return "Notes"
+    if (state.currentDir == state.rootDir) return state.activeRemote?.name ?: "Notes"
     return File(state.currentDir).name
 }
 
@@ -860,7 +1002,7 @@ private fun PasteBar(count: Int, cut: Boolean, onPaste: () -> Unit, onCancel: ()
 }
 
 @Composable
-private fun SetupCard(modifier: Modifier, onChoose: () -> Unit) {
+private fun SetupCard(modifier: Modifier, onChoose: () -> Unit, onChooseRemote: () -> Unit) {
     Column(
         modifier.padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -877,7 +1019,155 @@ private fun SetupCard(modifier: Modifier, onChoose: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Button(onClick = onChoose) { Text("Choose notes folder") }
+        OutlinedButton(onClick = onChooseRemote) { Text("Use a folder on an account") }
     }
+}
+
+/** Lists the notes folder on this phone and the ones on accounts, to switch between or manage them. */
+@Composable
+private fun NotesFoldersDialog(
+    state: NotesState,
+    onDismiss: () -> Unit,
+    onShowLocal: () -> Unit,
+    onChangeLocal: () -> Unit,
+    onShowRemote: (RemoteNotesFolder) -> Unit,
+    onRemoveRemote: (RemoteNotesFolder) -> Unit,
+    onAddRemote: () -> Unit
+) {
+    var removeTarget by remember { mutableStateOf<RemoteNotesFolder?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Notes folders") },
+        text = {
+            val listState = rememberLazyListState()
+            LazyColumn(Modifier.height(320.dp).verticalScrollbar(listState), state = listState) {
+                item {
+                    NotesFolderRow(
+                        icon = Icons.Filled.PhoneAndroid,
+                        title = "On this phone",
+                        subtitle = state.localRoot.ifBlank { "Not chosen yet" },
+                        active = state.activeRemote == null && state.rootDir.isNotBlank(),
+                        onClick = onShowLocal
+                    ) {
+                        if (state.localRoot.isNotBlank()) TextButton(onClick = onChangeLocal) { Text("Change") }
+                    }
+                }
+                items(state.remoteFolders, key = { it.id }) { folder ->
+                    NotesFolderRow(
+                        icon = Icons.Filled.Cloud,
+                        title = folder.name,
+                        subtitle = "/" + folder.remoteFolder,
+                        active = state.activeRemote?.id == folder.id,
+                        onClick = { onShowRemote(folder) }
+                    ) {
+                        IconButton(onClick = { removeTarget = folder }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Remove")
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        "A folder on an account is kept in sync with the server: notes are copied to this " +
+                            "phone when you open it, and sent back whenever you change one.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onAddRemote) { Text("Add account folder") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+    removeTarget?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { removeTarget = null },
+            title = { Text("Remove '${folder.name}'?") },
+            text = { Text("It's only removed from this phone. The notes on the account are left untouched.") },
+            confirmButton = {
+                TextButton(onClick = { removeTarget = null; onRemoveRemote(folder) }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { removeTarget = null }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun NotesFolderRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    trailing: @Composable () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon, contentDescription = null,
+            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        trailing()
+    }
+}
+
+/** Two steps: pick the account, then browse to the folder on it. [accounts] is null while loading. */
+@Composable
+private fun AddRemoteNotesFolder(
+    accounts: List<Account>?,
+    onDismiss: () -> Unit,
+    onAdd: (Account, String) -> Unit
+) {
+    var account by remember { mutableStateOf<Account?>(null) }
+    val picked = account
+    if (picked != null) {
+        RemoteFolderPickerDialog(
+            account = picked,
+            initialPath = "",
+            onDismiss = { account = null },
+            onSelect = { folder -> onAdd(picked, folder) }
+        )
+        return
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Which account?") },
+        text = {
+            val listState = rememberLazyListState()
+            LazyColumn(Modifier.height(280.dp).verticalScrollbar(listState), state = listState) {
+                if (accounts != null && accounts.isEmpty()) {
+                    item { Text("No accounts yet — add your server or cloud account in the Accounts tab first.") }
+                }
+                items(accounts.orEmpty(), key = { it.id }) { acc ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { account = acc }.padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Cloud, contentDescription = null)
+                        Column(Modifier.padding(start = 12.dp)) {
+                            Text(acc.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                acc.type.label, style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable

@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.notes.NoteEditRequest
+import com.opensync.foldersync.notes.RemoteNotes
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.vault.VaultManager
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +94,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             val md = note.markdown
             scope.launch(Dispatchers.IO) {
                 runCatching { target.writeText(md) }
+                RemoteNotes.notifyChanged(target.absolutePath)
                 withContext(Dispatchers.Main) {
                     com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
                     com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
@@ -110,6 +112,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         val file = existing ?: return
         scope.launch {
             withContext(Dispatchers.IO) { runCatching { file.delete() } }
+            RemoteNotes.notifyChanged(file.absolutePath)
             com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
             com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
             onBack()
@@ -130,6 +133,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             if (err != null) {
                 Toast.makeText(context, err.message ?: "Couldn't move to vault", Toast.LENGTH_LONG).show()
             } else {
+                RemoteNotes.notifyChanged(file.absolutePath)
                 com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
                 com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
                 onBack()
@@ -158,6 +162,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
             saving = false
             if (savedPath != null) {
+                RemoteNotes.notifyChanged(savedPath) // a note in an account folder goes up to the server now
                 com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
                 com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(context)
                 Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
