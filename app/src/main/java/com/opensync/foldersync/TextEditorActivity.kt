@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.notes.MarkdownView
 import com.opensync.foldersync.ui.notes.RichNoteEditor
@@ -94,18 +95,35 @@ class TextEditorActivity : ComponentActivity() {
         }.getOrNull() ?: ""
     }
 
-    private suspend fun writeText(uri: Uri, text: String): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
+    /** Returns null on success, or a message saying why the save failed. */
+    private suspend fun writeText(uri: Uri, text: String): String? = withContext(Dispatchers.IO) {
+        val wrote = runCatching {
             (contentResolver.openOutputStream(uri, "wt") ?: return@runCatching false).use {
                 it.write(text.toByteArray(Charsets.UTF_8))
             }
             true
-        }.getOrDefault(false).also { ok ->
-            if (ok) {
-                com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
-                com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(applicationContext)
+        }.getOrDefault(false)
+        if (!wrote) return@withContext "Couldn't save — the file may be read-only"
+        // A file opened from a remote account (SMB, FTP, …) is only a cache copy: push it back.
+        uploadToRemote(uri)?.let { return@withContext it }
+        com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(applicationContext)
+        com.opensync.foldersync.widget.SingleNoteWidgetProvider.notifyChanged(applicationContext)
+        null
+    }
+
+    private suspend fun uploadToRemote(uri: Uri): String? {
+        val accountId = intent?.getLongExtra("remote_account_id", -1L) ?: -1L
+        val relPath = intent?.getStringExtra("remote_rel_path")
+        val local = uri.path?.let { java.io.File(it) }
+        if (accountId < 0 || relPath == null || local == null) return null
+        return runCatching {
+            val account = Graph.database.accountDao().getById(accountId)
+                ?: throw IllegalStateException("Account not found")
+            ProviderFactory.forAccount(account, "").use { provider ->
+                provider.connect()
+                provider.upload(local, relPath, System.currentTimeMillis())
             }
-        }
+        }.exceptionOrNull()?.let { "Couldn't save to the server: ${it.message ?: it.javaClass.simpleName}" }
     }
 }
 
@@ -114,7 +132,7 @@ class TextEditorActivity : ComponentActivity() {
 private fun TextEditorScreen(
     title: String,
     read: suspend () -> String,
-    save: suspend (String) -> Boolean,
+    save: suspend (String) -> String?,
     onBack: () -> Unit,
     initialPreview: Boolean = false
 ) {
@@ -162,13 +180,9 @@ private fun TextEditorScreen(
                             saving = true
                             val md = note.markdown
                             scope.launch {
-                                val ok = save(md)
+                                val error = save(md)
                                 saving = false
-                                Toast.makeText(
-                                    context,
-                                    if (ok) "Saved" else "Couldn't save — the file may be read-only",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(context, error ?: "Saved", Toast.LENGTH_LONG).show()
                             }
                         },
                         enabled = loaded && !saving

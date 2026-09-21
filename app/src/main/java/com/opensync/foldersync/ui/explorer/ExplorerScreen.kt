@@ -87,6 +87,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.opensync.foldersync.data.Account
 import com.opensync.foldersync.files.ExplorerLocation
+import com.opensync.foldersync.files.OpenedFile
 import com.opensync.foldersync.files.SortBy
 import com.opensync.foldersync.provider.RemoteFile
 import com.opensync.foldersync.share.ShareUtil
@@ -122,7 +123,7 @@ fun ExplorerScreen(
     var showVaultConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        vm.openFile.collect { file -> openFile(context, file, onOpenPdf) }
+        vm.openFile.collect { opened -> openFile(context, opened, onOpenPdf) }
     }
     LaunchedEffect(Unit) {
         vm.shareRequests.collect { bundle -> ShareUtil.share(context, bundle) }
@@ -586,24 +587,32 @@ private val OPEN_TEXT_EXTS =
  * go straight to the built-in viewers — no "Open with" chooser, ever. Anything else is handed to the
  * system with a plain ACTION_VIEW so Android's normal default applies (and remembers an "Always" pick).
  */
-private fun openFile(context: android.content.Context, file: File, onOpenPdf: (String) -> Unit) {
+private fun openFile(context: android.content.Context, opened: OpenedFile, onOpenPdf: (String) -> Unit) {
+    val file = opened.file
     val ext = file.extension.lowercase()
     when {
         ext == "pdf" -> onOpenPdf(file.absolutePath)
         ext in OPEN_IMAGE_EXTS || ext in OPEN_VIDEO_EXTS ->
             launchInternal(context, file, com.opensync.foldersync.MediaViewActivity::class.java, "media_path")
         ext in OPEN_TEXT_EXTS ->
-            launchInternal(context, file, com.opensync.foldersync.TextEditorActivity::class.java, "note_path")
+            // A remote file is only a cache copy here; tell the editor where saves have to go back to.
+            launchInternal(context, file, com.opensync.foldersync.TextEditorActivity::class.java, "note_path") {
+                if (opened.accountId != null && opened.relPath != null) {
+                    putExtra("remote_account_id", opened.accountId)
+                    putExtra("remote_rel_path", opened.relPath)
+                }
+            }
         else -> openWithSystem(context, file)
     }
 }
 
 /** Launch one of OpenSync's own activities by file path (no chooser, no file:// exposure). */
 private fun launchInternal(
-    context: android.content.Context, file: File, cls: Class<*>, pathExtra: String
+    context: android.content.Context, file: File, cls: Class<*>, pathExtra: String,
+    extras: Intent.() -> Unit = {}
 ) {
     try {
-        context.startActivity(Intent(context, cls).putExtra(pathExtra, file.absolutePath))
+        context.startActivity(Intent(context, cls).putExtra(pathExtra, file.absolutePath).apply(extras))
     } catch (e: Exception) {
         Toast.makeText(context, "Couldn't open this file", Toast.LENGTH_SHORT).show()
     }

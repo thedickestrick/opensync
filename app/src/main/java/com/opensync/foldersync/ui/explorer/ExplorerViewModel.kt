@@ -8,6 +8,7 @@ import com.opensync.foldersync.files.Clipboard
 import com.opensync.foldersync.files.DEFAULT_LOCAL_DIR
 import com.opensync.foldersync.files.ExplorerLocation
 import com.opensync.foldersync.files.ExplorerRepository
+import com.opensync.foldersync.files.OpenedFile
 import com.opensync.foldersync.files.ShareInbox
 import com.opensync.foldersync.files.SharedClipboard
 import com.opensync.foldersync.files.ShareRequest
@@ -66,7 +67,7 @@ class ExplorerViewModel : ViewModel() {
     var listIndex = 0
     var listOffset = 0
 
-    private val _openFile = Channel<File>(Channel.BUFFERED)
+    private val _openFile = Channel<OpenedFile>(Channel.BUFFERED)
     val openFile = _openFile.receiveAsFlow()
 
     /** Emitted once the selected files are on disk and ready for the system share sheet. */
@@ -179,7 +180,9 @@ class ExplorerViewModel : ViewModel() {
         } else {
             viewModelScope.launch {
                 try {
-                    _openFile.send(repo.materialize(item))
+                    val remote = _state.value.location as? ExplorerLocation.Remote
+                    val file = repo.materialize(item)
+                    _openFile.send(OpenedFile(file, remote?.accountId, remote?.let { item.relPath }))
                 } catch (e: Exception) {
                     _state.update { it.copy(error = e.message ?: "Cannot open file") }
                 }

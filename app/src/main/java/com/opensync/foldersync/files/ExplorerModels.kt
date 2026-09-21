@@ -22,5 +22,11 @@ data class Clipboard(
     val move: Boolean
 )
 
+/**
+ * A file ready to open. [file] is the real file for local storage, or a downloaded cache copy for a
+ * remote account — in which case [accountId]/[relPath] say where an edited copy has to go back to.
+ */
+data class OpenedFile(val file: java.io.File, val accountId: Long? = null, val relPath: String? = null)
+
 /** Default starting directory (relative to the device root "/"). */
 const val DEFAULT_LOCAL_DIR = "storage/emulated/0"
