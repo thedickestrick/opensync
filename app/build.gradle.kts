@@ -146,4 +146,6 @@ dependencies {
 
     // JVM unit tests for the pure parts (the note document model).
     testImplementation("junit:junit:4.13.2")
+    // android.jar's org.json is all stubs in unit tests; the settings-backup test needs the real thing.
+    testImplementation("org.json:json:20240303")
 }

@@ -20,7 +20,12 @@ import com.opensync.foldersync.ui.common.verticalScrollbar
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -48,13 +53,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opensync.foldersync.Graph
+import com.opensync.foldersync.backup.SettingsBackup
 import com.opensync.foldersync.ui.PermissionUtil
 import com.opensync.foldersync.update.AppPrefs
 import com.opensync.foldersync.update.UpdateChecker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class UpdateUiState(
@@ -86,6 +94,36 @@ class SettingsViewModel : ViewModel() {
     }
 
     fun rescheduleAll() = viewModelScope.launch { Graph.syncManager.rescheduleAll() }
+
+    private val _backupStatus = MutableStateFlow<String?>(null)
+    val backupStatus = _backupStatus.asStateFlow()
+
+    /** Write accounts, folder pairs and app settings to [dest], sealed under [passphrase]. */
+    fun exportSettings(dest: Uri, passphrase: String) = viewModelScope.launch {
+        _backupStatus.value = "Saving…"
+        _backupStatus.value = runCatching {
+            val bytes = SettingsBackup.export(passphrase.toCharArray())
+            withContext(Dispatchers.IO) {
+                (Graph.appContext.contentResolver.openOutputStream(dest, "wt")
+                    ?: throw IllegalStateException("Can't write to that location")).use { it.write(bytes) }
+            }
+            "Settings saved. Keep the file and its passphrase somewhere you can reach from the new phone."
+        }.getOrElse { "Couldn't save settings: ${it.message}" }
+    }
+
+    fun importSettings(src: Uri, passphrase: String) = viewModelScope.launch {
+        _backupStatus.value = "Loading…"
+        _backupStatus.value = runCatching {
+            val bytes = withContext(Dispatchers.IO) {
+                Graph.appContext.contentResolver.openInputStream(src)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("Can't read that file")
+            }
+            val result = SettingsBackup.restore(bytes, passphrase.toCharArray())
+            // The update source may have just been filled in.
+            _update.update { it.copy(owner = prefs.updateOwner, repo = prefs.updateRepo) }
+            result.summary()
+        }.getOrElse { it.message ?: "Couldn't load settings" }
+    }
 
     fun setOwner(v: String) {
         prefs.updateOwner = v.trim()
@@ -179,6 +217,21 @@ fun SettingsScreen(
         ActivityResultContracts.StartActivityForResult()
     ) { batteryUnrestricted = isIgnoringBattery(context) }
 
+    val backupStatus by vm.backupStatus.collectAsState()
+    // Saving asks for the passphrase first, then where to put the file; loading is the other way round.
+    var askExportPassphrase by remember { mutableStateOf(false) }
+    var exportPassphrase by remember { mutableStateOf("") }
+    var importSource by remember { mutableStateOf<Uri?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) vm.exportSettings(uri, exportPassphrase)
+        exportPassphrase = ""
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> importSource = uri }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -222,6 +275,23 @@ fun SettingsScreen(
             OutlinedButton(onClick = { vm.rescheduleAll() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Re-apply background schedules")
             }
+
+            HorizontalDivider()
+            Text("Move to a new phone", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Save your accounts (with their passwords), folder pairs and app settings to one " +
+                    "passphrase-protected file, then load it on the new phone. Loading adds to what's " +
+                    "already there — it never deletes anything. The vault and sync history aren't included.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(onClick = { askExportPassphrase = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Save settings to a file")
+            }
+            OutlinedButton(onClick = { importLauncher.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Load settings from a file")
+            }
+            backupStatus?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
             HorizontalDivider()
             Text("Background reliability", style = MaterialTheme.typography.titleMedium)
@@ -320,6 +390,86 @@ fun SettingsScreen(
             )
         }
     }
+
+    if (askExportPassphrase) {
+        PassphraseDialog(
+            title = "Protect the backup",
+            message = "The file holds your account passwords, so it's encrypted. You'll need this " +
+                "passphrase to load it — it can't be recovered.",
+            confirm = true,
+            actionLabel = "Next",
+            onDismiss = { askExportPassphrase = false },
+            onDone = { pass ->
+                askExportPassphrase = false
+                exportPassphrase = pass
+                exportLauncher.launch("opensync-settings.osbackup")
+            }
+        )
+    }
+    importSource?.let { src ->
+        PassphraseDialog(
+            title = "Backup passphrase",
+            message = "Enter the passphrase this backup was saved with.",
+            confirm = false,
+            actionLabel = "Load",
+            onDismiss = { importSource = null },
+            onDone = { pass ->
+                importSource = null
+                vm.importSettings(src, pass)
+            }
+        )
+    }
+}
+
+@Composable
+private fun PassphraseDialog(
+    title: String,
+    message: String,
+    confirm: Boolean,
+    actionLabel: String,
+    onDismiss: () -> Unit,
+    onDone: (String) -> Unit
+) {
+    var pass by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    val mismatch = confirm && again.isNotEmpty() && pass != again
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = pass,
+                    onValueChange = { pass = it },
+                    label = { Text("Passphrase") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (confirm) {
+                    OutlinedTextField(
+                        value = again,
+                        onValueChange = { again = it },
+                        label = { Text("Repeat passphrase") },
+                        singleLine = true,
+                        isError = mismatch,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onDone(pass) },
+                enabled = pass.isNotEmpty() && (!confirm || pass == again)
+            ) { Text(actionLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
