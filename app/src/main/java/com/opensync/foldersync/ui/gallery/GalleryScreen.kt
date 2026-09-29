@@ -181,7 +181,7 @@ fun GalleryScreen(
         editScope.launch {
             val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
             if (f != null) {
-                val editor = if (item.isVideo) com.opensync.foldersync.VideoEditorActivity::class.java
+                val editor = if (item.isVideo) com.opensync.foldersync.videoedit.VideoEditorActivity::class.java
                     else com.opensync.foldersync.PhotoEditorActivity::class.java
                 context.startActivity(
                     android.content.Intent(context, editor).putExtra("edit_path", f.absolutePath)

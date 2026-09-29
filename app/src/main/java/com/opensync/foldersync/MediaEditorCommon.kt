@@ -76,10 +76,12 @@ internal data class ColorEdits(
     val saturation: Float = 0f,
     val warmth: Float = 0f,
     val tint: Float = 0f,
-    val filter: Int = 0
+    val filter: Int = 0,
+    val filterStrength: Float = 1f // 0..1: how much of the filter preset to apply
 ) {
     val modified: Boolean
-        get() = brightness != 0f || contrast != 0f || saturation != 0f || warmth != 0f || tint != 0f || filter != 0
+        get() = brightness != 0f || contrast != 0f || saturation != 0f || warmth != 0f || tint != 0f ||
+            (filter != 0 && filterStrength > 0f)
 }
 
 internal data class AspectOption(val label: String, val ratio: Float?)
@@ -128,6 +130,70 @@ internal val FILTERS = listOf(
             postConcat(contrastMatrix(0.8f))
             postConcat(offsetMatrix(r = 12f, g = 12f, b = 18f))
         }
+    },
+    FilterPreset("Bright") {
+        GfxColorMatrix().apply {
+            setSaturation(1.1f)
+            postConcat(offsetMatrix(r = 22f, g = 22f, b = 22f))
+        }
+    },
+    FilterPreset("Dramatic") {
+        GfxColorMatrix().apply {
+            setSaturation(0.8f)
+            postConcat(contrastMatrix(1.4f))
+            postConcat(offsetMatrix(r = -8f, g = -8f, b = -4f))
+        }
+    },
+    FilterPreset("Vintage") {
+        GfxColorMatrix().apply {
+            setSaturation(0.65f)
+            postConcat(contrastMatrix(0.9f))
+            postConcat(offsetMatrix(r = 28f, g = 14f, b = -16f))
+        }
+    },
+    FilterPreset("Film") {
+        // Teal shadows, warm highlights.
+        GfxColorMatrix(
+            floatArrayOf(
+                1.05f, 0.05f, -0.05f, 0f, -4f,
+                0.02f, 1.0f, 0.02f, 0f, 2f,
+                -0.05f, 0.08f, 0.95f, 0f, 10f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        ).apply { postConcat(contrastMatrix(1.1f)) }
+    },
+    FilterPreset("Summer") {
+        GfxColorMatrix().apply {
+            setSaturation(1.3f)
+            postConcat(offsetMatrix(r = 18f, g = 8f, b = -10f))
+        }
+    },
+    FilterPreset("Autumn") {
+        GfxColorMatrix().apply {
+            setSaturation(0.9f)
+            postConcat(offsetMatrix(r = 30f, g = 6f, b = -30f))
+            postConcat(contrastMatrix(1.08f))
+        }
+    },
+    FilterPreset("Ocean") {
+        GfxColorMatrix().apply {
+            setSaturation(1.1f)
+            postConcat(offsetMatrix(r = -24f, g = 6f, b = 30f))
+        }
+    },
+    FilterPreset("Chrome") {
+        GfxColorMatrix().apply {
+            setSaturation(1.2f)
+            postConcat(contrastMatrix(1.25f))
+        }
+    },
+    FilterPreset("Silver") {
+        // Bright, low-contrast black & white.
+        GfxColorMatrix().apply {
+            setSaturation(0f)
+            postConcat(contrastMatrix(0.85f))
+            postConcat(offsetMatrix(r = 20f, g = 20f, b = 24f))
+        }
     }
 )
 
@@ -160,8 +226,17 @@ internal fun colorMatrixFor(e: ColorEdits): GfxColorMatrix {
     cm.postConcat(contrastMatrix(1f + e.contrast))
     cm.postConcat(offsetMatrix(r = e.brightness * 100f, g = e.brightness * 100f, b = e.brightness * 100f))
     cm.postConcat(offsetMatrix(r = e.warmth * 40f, g = e.tint * 25f, b = -e.warmth * 40f))
-    FILTERS.getOrNull(e.filter)?.build?.invoke()?.let { cm.postConcat(it) }
+    FILTERS.getOrNull(e.filter)?.build?.invoke()?.let { cm.postConcat(scaledFilter(it, e.filterStrength)) }
     return cm
+}
+
+/** Blend a filter preset with "no filter": 0 = identity, 1 = the full preset. */
+private fun scaledFilter(f: GfxColorMatrix, strength: Float): GfxColorMatrix {
+    val k = strength.coerceIn(0f, 1f)
+    if (k >= 1f) return f
+    val identity = GfxColorMatrix().array
+    val a = f.array
+    return GfxColorMatrix(FloatArray(20) { i -> identity[i] + k * (a[i] - identity[i]) })
 }
 
 @Composable
@@ -191,8 +266,29 @@ private fun AdjustSlider(label: String, value: Float, onValue: (Float) -> Unit) 
     }
 }
 
+/** Filter thumbnails, plus an intensity slider once a filter is picked. */
 @Composable
-internal fun FilterPanel(thumb: Bitmap?, selected: Int, onSelect: (Int) -> Unit) {
+internal fun FilterPanel(
+    thumb: Bitmap?,
+    selected: Int,
+    strength: Float,
+    onSelect: (Int) -> Unit,
+    onStrength: (Float) -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        FilterThumbnails(thumb, selected, onSelect)
+        if (selected != 0) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Intensity", color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(90.dp))
+                Slider(value = strength, onValueChange = onStrength, valueRange = 0f..1f, modifier = Modifier.weight(1f))
+                Text("${(strength * 100).toInt()}", color = Color(0xFF999999), fontSize = 12.sp, modifier = Modifier.width(36.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterThumbnails(thumb: Bitmap?, selected: Int, onSelect: (Int) -> Unit) {
     LazyRow(
         Modifier.fillMaxWidth().padding(vertical = 8.dp),
         contentPadding = PaddingValues(horizontal = 12.dp),

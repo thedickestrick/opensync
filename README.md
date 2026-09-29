@@ -25,9 +25,13 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
   its media as a grid; remote image thumbnails download progressively (size-capped).
 - Full-screen viewer with **swipe** between items and **pinch-to-zoom**; videos open in your
   player of choice.
-- Built-in **photo editor** (light & colour, filters, crop / straighten / rotate / flip) and a
-  matching **video editor** that adds trimming and removing the sound; the video preview plays
-  with the edits applied, and saving re-encodes to MP4 as a copy or over the original.
+- Built-in **photo editor**: light & colour, filters with intensity, crop / straighten / rotate / flip.
+- Built-in **video editor** (modelled on Samsung Gallery's): trim; transform (crop with aspect
+  ratios, straighten, rotate, flip); filters with intensity; tone (brightness, exposure, contrast,
+  highlights, shadows, saturation, warmth, tint, sharpness, vignette, one-tap Auto); decorate with
+  text, emoji stickers and drawing; speed ¼×–4×; the video's volume plus background music;
+  undo/redo; capture a frame as a photo. The preview plays with every edit applied; save as MP4
+  (a copy or over the original, at Original/1080p/720p/480p) or as an animated GIF.
 - Switch data source (Device / Internal storage / each account) from the title bar.
 
 ### Folder sync / backup

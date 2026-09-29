@@ -191,7 +191,13 @@ private fun PhotoEditorScreen(uri: Uri, onClose: () -> Unit) {
         Column(Modifier.fillMaxWidth().background(EDITOR_PANEL_BG).padding(bottom = 6.dp)) {
             when (tool) {
                 Tool.ADJUST -> AdjustPanel(edits.color) { edits = edits.copy(color = it) }
-                Tool.FILTERS -> FilterPanel(thumb, edits.color.filter) { edits = edits.copy(color = edits.color.copy(filter = it)) }
+                Tool.FILTERS -> FilterPanel(
+                    thumb = thumb,
+                    selected = edits.color.filter,
+                    strength = edits.color.filterStrength,
+                    onSelect = { edits = edits.copy(color = edits.color.copy(filter = it, filterStrength = 1f)) },
+                    onStrength = { edits = edits.copy(color = edits.color.copy(filterStrength = it)) }
+                )
                 Tool.CROP -> CropPanel(
                     aspect = aspect,
                     straighten = edits.straighten,

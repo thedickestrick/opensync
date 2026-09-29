@@ -145,9 +145,9 @@
             </intent-filter>
         </activity>
 
-        <!-- Video editor (trim, adjustments, filters, crop/rotate/flip, remove sound). Also a system "Edit" target. -->
+        <!-- Video editor (trim, tone, filters, transform, text/stickers/drawing, speed, audio). Also a system "Edit" target. -->
         <activity
-            android:name=".VideoEditorActivity"
+            android:name=".videoedit.VideoEditorActivity"
             android:exported="true"
             android:label="Edit with OpenSync"
             android:theme="@style/Theme.OpenSync"
