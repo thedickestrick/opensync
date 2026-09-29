@@ -41,9 +41,9 @@ class VideoEditModelTest {
         val c = b.copy(color = ColorEdits(brightness = 0.1f))
         val d = c.copy(color = ColorEdits(brightness = 0.2f))
 
-        h.record(a, now = 1_000) // a -> b
-        h.record(b, now = 5_000) // b -> c
-        h.record(c, now = 5_100) // c -> d, part of the same slider drag
+        h.record(a, key = "speed", now = 1_000) // a -> b
+        h.record(b, key = "brightness", now = 5_000) // b -> c
+        h.record(c, key = "brightness", now = 5_100) // c -> d, part of the same slider drag
         assertTrue(h.canUndo)
 
         assertEquals(b, h.undo(d)) // the whole drag is one step
@@ -54,6 +54,18 @@ class VideoEditModelTest {
         assertEquals(b, h.redo(a))
         assertEquals(d, h.redo(b))
         assertFalse(h.canRedo)
+    }
+
+    @Test
+    fun quickChangesFromDifferentControlsStaySeparate() {
+        val h = EditHistory()
+        val a = VideoEdits()
+        val b = a.copy(rotation = 1)
+        val c = b.copy(rotation = 2)
+        h.record(a, now = 1_000) // two quick rotate taps: no key, so never merged
+        h.record(b, now = 1_100)
+        assertEquals(b, h.undo(c))
+        assertEquals(a, h.undo(b))
     }
 
     @Test

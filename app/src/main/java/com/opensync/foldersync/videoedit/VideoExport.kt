@@ -2,6 +2,8 @@ package com.opensync.foldersync.videoedit
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -57,6 +59,7 @@ private const val MAX_OVERLAY_SIDE = 1920
 private const val GIF_MAX_SIDE = 480
 private const val GIF_FPS = 12
 private const val GIF_MAX_FRAMES = 12 * 20 // 20 seconds
+private const val MAX_MUSIC_REPEATS = 100
 
 // ---- Reading the source ----
 
@@ -72,10 +75,38 @@ internal fun readVideoMeta(context: Context, uri: Uri): VideoMeta {
         val frames = if (Build.VERSION.SDK_INT >= 28) {
             r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull()
         } else null
-        val fps = if (frames != null && duration > 0) frames * 1000f / duration else 30f
+        val fps = if (frames != null && duration > 0) frames * 1000f / duration else containerFrameRate(context, uri) ?: 30f
         require(w > 0 && h > 0 && duration > 0) { "Not a playable video" }
         val sideways = rotation % 180 != 0
         return VideoMeta(if (sideways) h else w, if (sideways) w else h, duration, hasAudio, fps.coerceIn(1f, 240f))
+    } finally {
+        runCatching { r.release() }
+    }
+}
+
+/** The frame rate the container declares, for devices whose retriever can't count frames. */
+private fun containerFrameRate(context: Context, uri: Uri): Float? {
+    val x = MediaExtractor()
+    return try {
+        x.setDataSource(context, uri, null)
+        (0 until x.trackCount).map { x.getTrackFormat(it) }
+            .firstOrNull { it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true }
+            ?.takeIf { it.containsKey(MediaFormat.KEY_FRAME_RATE) }
+            ?.let { f -> runCatching { f.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }.getOrElse { f.getFloat(MediaFormat.KEY_FRAME_RATE) } }
+    } catch (_: Exception) {
+        null
+    } finally {
+        x.release()
+    }
+}
+
+private fun audioDurationMs(context: Context, uri: Uri): Long? {
+    val r = MediaMetadataRetriever()
+    return try {
+        r.setDataSource(context, uri)
+        r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.takeIf { it > 0 }
+    } catch (_: Exception) {
+        null
     } finally {
         runCatching { r.release() }
     }
@@ -143,10 +174,13 @@ private fun volumeProcessor(gain: Float): AudioProcessor = ChannelMixingAudioPro
  * [gif] leaves the sound out and targets a small frame, since it's only a step towards a GIF.
  */
 @OptIn(UnstableApi::class)
-private fun buildComposition(uri: Uri, e: VideoEdits, meta: VideoMeta, res: ResolutionOption, gif: Boolean): Composition {
+private fun buildComposition(context: Context, uri: Uri, e: VideoEdits, meta: VideoMeta, res: ResolutionOption, gif: Boolean): Composition {
+    val trimEnd = e.trimEndMs ?: meta.durationMs
+    // A GIF only ever uses its first GIF_MAX_FRAMES / GIF_FPS seconds, so don't render more.
+    val end = if (gif) min(trimEnd, e.trimStartMs + (GIF_MAX_FRAMES * 1000L / GIF_FPS * e.speed).toLong()) else trimEnd
     val clipping = MediaItem.ClippingConfiguration.Builder()
         .setStartPositionMs(e.trimStartMs)
-        .apply { e.trimEndMs?.let { setEndPositionMs(it) } }
+        .apply { if (end < meta.durationMs) setEndPositionMs(end) }
         .build()
     val item = MediaItem.Builder().setUri(uri).setClippingConfiguration(clipping).build()
 
@@ -191,12 +225,7 @@ private fun buildComposition(uri: Uri, e: VideoEdits, meta: VideoMeta, res: Reso
     val sequences = mutableListOf(EditedMediaItemSequence(listOf(main)))
     val music = e.music
     if (music != null && !gif) {
-        val track = EditedMediaItem.Builder(MediaItem.fromUri(music.uri))
-            .setRemoveVideo(true)
-            .setEffects(Effects(listOf(volumeProcessor(music.volume)), emptyList()))
-            .build()
-        // Looping: the music repeats (or is cut) to fit the video.
-        sequences += EditedMediaItemSequence(listOf(track), /* isLooping= */ true)
+        sequences += musicSequence(context, music, outputMs = ((trimEnd - e.trimStartMs) / e.speed).toLong(), speedChanged = e.speed != 1f)
     }
     return Composition.Builder(sequences)
         .apply {
@@ -204,6 +233,31 @@ private fun buildComposition(uri: Uri, e: VideoEdits, meta: VideoMeta, res: Reso
             if (e.lookModified) setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL)
         }
         .build()
+}
+
+/**
+ * The background music, repeated or cut to fit the video. A looping sequence stops at the video's
+ * length *before* speed effects, so with a speed change the copies are laid out explicitly instead.
+ */
+@OptIn(UnstableApi::class)
+private fun musicSequence(context: Context, music: MusicTrack, outputMs: Long, speedChanged: Boolean): EditedMediaItemSequence {
+    fun track(clipEndMs: Long?): EditedMediaItem {
+        val item = MediaItem.Builder().setUri(music.uri)
+            .apply { clipEndMs?.let { setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setEndPositionMs(it).build()) } }
+            .build()
+        return EditedMediaItem.Builder(item)
+            .setRemoveVideo(true)
+            .setEffects(Effects(listOf(volumeProcessor(music.volume)), emptyList()))
+            .build()
+    }
+    val musicMs = if (speedChanged) audioDurationMs(context, Uri.parse(music.uri)) else null
+    if (musicMs == null || outputMs / musicMs >= MAX_MUSIC_REPEATS) {
+        return EditedMediaItemSequence(listOf(track(null)), /* isLooping= */ true)
+    }
+    val whole = (outputMs / musicMs).toInt()
+    val rest = outputMs % musicMs
+    val items = List(whole) { track(null) } + if (rest > 0) listOf(track(rest)) else emptyList()
+    return EditedMediaItemSequence(items)
 }
 
 /** Runs Transformer to write [out] (MP4). Must be cancellable: the user may leave mid-way. */
@@ -262,7 +316,7 @@ internal suspend fun saveEditedVideo(
 ): File? {
     val tmp = tempFile(context, "mp4")
     try {
-        runTransformer(context, buildComposition(uri, edits, meta, res, gif = false), tmp, onProgress)
+        runTransformer(context, buildComposition(context, uri, edits, meta, res, gif = false), tmp, onProgress)
         return withContext(Dispatchers.IO) {
             when {
                 overwrite && uri.scheme == "file" -> {
@@ -301,7 +355,7 @@ internal suspend fun saveEditedGif(
 ): File {
     val tmp = tempFile(context, "mp4")
     try {
-        runTransformer(context, buildComposition(uri, edits, meta, RESOLUTIONS.first(), gif = true), tmp) { onProgress(it * 7 / 10) }
+        runTransformer(context, buildComposition(context, uri, edits, meta, RESOLUTIONS.first(), gif = true), tmp) { onProgress(it * 7 / 10) }
         return withContext(Dispatchers.IO) {
             val r = MediaMetadataRetriever()
             val out = uniqueFile(copyDir(uri, Environment.DIRECTORY_PICTURES), "${baseName(uri, "video")}_edited", "gif")

@@ -139,36 +139,42 @@ internal fun outputSize(edited: Pair<Int, Int>, res: ResolutionOption): Pair<Int
     return even(w * k) to even(h * k)
 }
 
-/** Keeps edit history for undo/redo; quick successive changes (a slider drag) collapse into one step. */
+/**
+ * Keeps edit history for undo/redo. Successive changes with the same key close together in time
+ * (one slider drag, one stroke) collapse into a single step; changes without a key never do.
+ */
 internal class EditHistory(private val limit: Int = 60) {
     private val past = ArrayDeque<VideoEdits>()
     private val future = ArrayDeque<VideoEdits>()
     private var lastChangeAt = 0L
+    private var lastKey: Any? = null
 
     val canUndo get() = past.isNotEmpty()
     val canRedo get() = future.isNotEmpty()
 
-    /** Call with the state *before* a change. */
-    fun record(before: VideoEdits, now: Long = System.currentTimeMillis()) {
-        if (now - lastChangeAt > COALESCE_MS || past.isEmpty()) {
+    /** Call with the state *before* a change; [key] identifies the control or gesture making it. */
+    fun record(before: VideoEdits, key: Any? = null, now: Long = System.currentTimeMillis()) {
+        val continues = key != null && key == lastKey && now - lastChangeAt <= COALESCE_MS && past.isNotEmpty()
+        if (!continues) {
             past.addLast(before)
             if (past.size > limit) past.removeFirst()
         }
         future.clear()
         lastChangeAt = now
+        lastKey = key
     }
 
     fun undo(current: VideoEdits): VideoEdits? {
         val prev = past.removeLastOrNull() ?: return null
         future.addLast(current)
-        lastChangeAt = 0L
+        lastKey = null
         return prev
     }
 
     fun redo(current: VideoEdits): VideoEdits? {
         val next = future.removeLastOrNull() ?: return null
         past.addLast(current)
-        lastChangeAt = 0L
+        lastKey = null
         return next
     }
 

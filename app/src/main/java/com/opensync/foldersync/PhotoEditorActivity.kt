@@ -59,7 +59,7 @@ import java.io.FileOutputStream
 /**
  * A self-contained photo editor: live (GPU) light/colour adjustments, filter presets, and rotate/flip,
  * with a full-resolution save. Reachable internally (edit_path extra) and as a system image editor
- * (ACTION_EDIT). The panels and colour model are shared with [VideoEditorActivity] (MediaEditorCommon.kt).
+ * (ACTION_EDIT). The panels and colour model are shared with [com.opensync.foldersync.videoedit.VideoEditorActivity] (MediaEditorCommon.kt).
  */
 class PhotoEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

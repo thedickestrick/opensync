@@ -48,7 +48,7 @@ internal class ToneEffect(@Volatile var params: ToneParams) : GlEffect {
 }
 
 @OptIn(UnstableApi::class)
-private class ToneShaderProgram(private val effect: ToneEffect, useHdr: Boolean) :
+private class ToneShaderProgram(private val effect: ToneEffect, private val useHdr: Boolean) :
     BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
     private val program: GlProgram = try {
@@ -88,6 +88,7 @@ private class ToneShaderProgram(private val effect: ToneEffect, useHdr: Boolean)
             program.setFloatUniform("uShadows", p.shadows)
             program.setFloatUniform("uSharpness", p.sharpness)
             program.setFloatUniform("uVignette", p.vignette)
+            program.setFloatUniform("uLinearInput", if (useHdr) 1f else 0f)
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, /* first= */ 0, /* count= */ 4)
         } catch (e: GlUtil.GlException) {
@@ -114,10 +115,15 @@ void main() {
 }
 """
 
-        // Colours arrive gamma-encoded (Media3's default SDR working space), the same space the
-        // photo editor's colour matrix works in.
+        // SDR colours arrive gamma-encoded (Media3's default SDR working space), the space the photo
+        // editor's colour matrix works in. HDR arrives linear (the preview keeps HDR; saving tone-maps
+        // to SDR first), so it is gamma-encoded around the adjustments to look the same.
         const val FRAGMENT_SHADER = """#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
+#else
+precision mediump float;
+#endif
 uniform sampler2D uTexSampler;
 uniform vec2 uTexelSize;
 uniform float uAspect;
@@ -127,6 +133,7 @@ uniform float uHighlights;
 uniform float uShadows;
 uniform float uSharpness;
 uniform float uVignette;
+uniform float uLinearInput;
 varying vec2 vTexSamplingCoord;
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -135,6 +142,7 @@ void main() {
   vec2 uv = vTexSamplingCoord;
   vec4 src = texture2D(uTexSampler, uv);
   vec3 c = src.rgb;
+  if (uLinearInput > 0.5) c = pow(max(c, 0.0), vec3(1.0 / 2.2));
 
   if (uSharpness != 0.0) {
     vec3 blur = (texture2D(uTexSampler, uv + vec2(uTexelSize.x, 0.0)).rgb
@@ -167,7 +175,10 @@ void main() {
     c = uVignette > 0.0 ? c * (1.0 - uVignette * 0.85 * v) : mix(c, vec3(1.0), -uVignette * 0.7 * v);
   }
 
-  gl_FragColor = vec4(clamp(c, 0.0, 1.0), src.a);
+  c = clamp(c, 0.0, 1.0);
+  if (uLinearInput > 0.5) c = pow(c, vec3(2.2));
+
+  gl_FragColor = vec4(c, src.a);
 }
 """
     }

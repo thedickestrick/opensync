@@ -196,9 +196,9 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
     var edits by remember { mutableStateOf(VideoEdits()) }
     val history = remember { EditHistory() }
     var historyVersion by remember { mutableIntStateOf(0) }
-    fun update(new: VideoEdits) {
+    fun update(new: VideoEdits, key: Any? = null) {
         if (new == edits) return
-        history.record(edits)
+        history.record(edits, key)
         edits = new
         historyVersion++
     }
@@ -305,6 +305,9 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
         }
     }
 
+    // Scrubbing: seek at most every SCRUB_SEEK_INTERVAL_MS while the finger moves, exactly on release.
+    val scrub = remember { longArrayOf(0L, -1L) } // [last seek time, pending position]
+
     // Track the playhead and keep playback inside the trimmed range.
     val trimStartState = rememberUpdatedState(trimStart)
     val trimEndState = rememberUpdatedState(trimEnd)
@@ -315,14 +318,12 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                 player.pause()
                 player.seekTo(trimStartState.value)
             }
-            position.longValue = player.currentPosition
+            if (scrub[1] < 0) position.longValue = player.currentPosition // else the scrub owns it
             playing = player.isPlaying
             delay(30)
         }
     }
 
-    // Scrubbing: seek at most every SCRUB_SEEK_INTERVAL_MS while the finger moves, exactly on release.
-    val scrub = remember { longArrayOf(0L, -1L) } // [last seek time, pending position]
     fun scrubTo(ms: Long) {
         player.pause()
         position.longValue = ms
@@ -475,7 +476,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                                 imageAspect = frameAspect,
                                 crop = edits.crop,
                                 aspect = aspect,
-                                onCrop = { update(edits.copy(crop = it)) }
+                                onCrop = { update(edits.copy(crop = it), "crop") }
                             )
                         } else {
                             // Decorations belong to the finished (cropped) frame, so they're hidden while cropping.
@@ -487,8 +488,9 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                                 drawColor = drawColor,
                                 drawWidth = drawWidth,
                                 onSelect = { selectedDecoration = it },
-                                onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it })) },
-                                onStrokes = { update(edits.copy(strokes = it)) }
+                                onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it }), "deco:${d.id}") },
+                                // One key per stroke: a stroke is one undo step, the next is another.
+                                onStrokes = { update(edits.copy(strokes = it), "stroke:${it.size}") }
                             )
                             if (tool != VideoTool.DECORATE) {
                                 Box(
@@ -552,7 +554,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     endMs = trimEnd,
                     position = position,
                     onTrim = { s, e, movingStart ->
-                        update(edits.copy(trimStartMs = s, trimEndMs = e.takeIf { it < durationMs }))
+                        update(edits.copy(trimStartMs = s, trimEndMs = e.takeIf { it < durationMs }), if (movingStart) "trimStart" else "trimEnd")
                         scrubTo(if (movingStart) s else e)
                     },
                     onSeek = { scrubTo(it) },
@@ -566,7 +568,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                         val ia = meta?.let { transformedSize(it, edits).let { (w, h) -> w / h } } ?: 1f
                         update(edits.copy(crop = centeredCrop(ia, r)))
                     },
-                    onStraighten = { update(edits.copy(straighten = it)) },
+                    onStraighten = { update(edits.copy(straighten = it), "straighten") },
                     onRotateLeft = { update(edits.copy(rotation = (edits.rotation + 3) % 4)) },
                     onRotateRight = { update(edits.copy(rotation = (edits.rotation + 1) % 4)) },
                     onFlipH = { update(edits.copy(flipH = !edits.flipH)) },
@@ -577,13 +579,13 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     selected = edits.color.filter,
                     strength = edits.color.filterStrength,
                     onSelect = { update(edits.copy(color = edits.color.copy(filter = it, filterStrength = 1f))) },
-                    onStrength = { update(edits.copy(color = edits.color.copy(filterStrength = it))) }
+                    onStrength = { update(edits.copy(color = edits.color.copy(filterStrength = it)), "filterStrength") }
                 )
                 VideoTool.TONE -> TonePanel(
                     edits = edits,
                     selected = toneIndex,
                     onSelect = { toneIndex = it },
-                    onChange = { update(it) },
+                    onChange = { update(it, "tone:$toneIndex") },
                     onAuto = {
                         thumb?.let { f ->
                             val (c, t) = autoTone(f)
@@ -605,7 +607,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                         update(edits.copy(decorations = edits.decorations + s))
                         selectedDecoration = s.id
                     },
-                    onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it })) },
+                    onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it }), "deco:${d.id}") },
                     onDelete = { d ->
                         update(edits.copy(decorations = edits.decorations.filterNot { it.id == d.id }))
                         selectedDecoration = null
@@ -620,9 +622,9 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     hasAudio = meta?.hasAudio == true,
                     volume = edits.volume,
                     music = edits.music,
-                    onVolume = { update(edits.copy(volume = it)) },
+                    onVolume = { update(edits.copy(volume = it), "volume") },
                     onPickMusic = { musicPicker.launch(arrayOf("audio/*")) },
-                    onMusicVolume = { v -> edits.music?.let { update(edits.copy(music = it.copy(volume = v))) } },
+                    onMusicVolume = { v -> edits.music?.let { update(edits.copy(music = it.copy(volume = v)), "musicVolume") } },
                     onRemoveMusic = { update(edits.copy(music = null)) }
                 )
             }
