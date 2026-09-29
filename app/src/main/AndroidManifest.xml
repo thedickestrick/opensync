@@ -145,6 +145,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Video editor (trim, adjustments, filters, crop/rotate/flip, remove sound). Also a system "Edit" target. -->
+        <activity
+            android:name=".VideoEditorActivity"
+            android:exported="true"
+            android:label="Edit with OpenSync"
+            android:theme="@style/Theme.OpenSync"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout">
+            <intent-filter android:label="Edit with OpenSync">
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+
         <!-- Home-screen notes widget (resizable list of notes). -->
         <receiver
             android:name=".widget.NotesWidgetProvider"

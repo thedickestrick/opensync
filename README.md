@@ -25,6 +25,9 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
   its media as a grid; remote image thumbnails download progressively (size-capped).
 - Full-screen viewer with **swipe** between items and **pinch-to-zoom**; videos open in your
   player of choice.
+- Built-in **photo editor** (light & colour, filters, crop / straighten / rotate / flip) and a
+  matching **video editor** that adds trimming and removing the sound; the video preview plays
+  with the edits applied, and saving re-encodes to MP4 as a copy or over the original.
 - Switch data source (Device / Internal storage / each account) from the title bar.
 
 ### Folder sync / backup

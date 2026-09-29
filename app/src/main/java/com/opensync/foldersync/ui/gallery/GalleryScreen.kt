@@ -178,19 +178,17 @@ fun GalleryScreen(
     var showVaultConfirm by remember { mutableStateOf(false) }
 
     fun launchEditor(item: MediaItem) {
-        if (item.isVideo) {
-            android.widget.Toast.makeText(context, "Only photos can be edited", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
         editScope.launch {
             val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
             if (f != null) {
+                val editor = if (item.isVideo) com.opensync.foldersync.VideoEditorActivity::class.java
+                    else com.opensync.foldersync.PhotoEditorActivity::class.java
                 context.startActivity(
-                    android.content.Intent(context, com.opensync.foldersync.PhotoEditorActivity::class.java)
-                        .putExtra("edit_path", f.absolutePath)
+                    android.content.Intent(context, editor).putExtra("edit_path", f.absolutePath)
                 )
             } else {
-                android.widget.Toast.makeText(context, "Couldn't open this photo", android.widget.Toast.LENGTH_SHORT).show()
+                val what = if (item.isVideo) "video" else "photo"
+                android.widget.Toast.makeText(context, "Couldn't open this $what", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -466,7 +464,7 @@ private fun GallerySelectionBar(
                         onClick = { overflow = false; onMoveToVault() }
                     )
                     if (canRename) {
-                        DropdownMenuItem(text = { Text("Edit photo") }, onClick = { overflow = false; onEdit() })
+                        DropdownMenuItem(text = { Text("Edit") }, onClick = { overflow = false; onEdit() })
                         DropdownMenuItem(text = { Text("Details") }, onClick = { overflow = false; onDetails() })
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { overflow = false; onRename() })
                     }
@@ -794,7 +792,7 @@ private fun MediaViewer(
                     Spacer(Modifier.weight(1f))
                     current?.let { c ->
                         IconButton(onClick = { onShare(c) }) { Icon(Icons.Filled.Share, "Share", tint = Color.White) }
-                        if (!c.isVideo) IconButton(onClick = { onEdit(c) }) { Icon(Icons.Filled.Edit, "Edit", tint = Color.White) }
+                        IconButton(onClick = { onEdit(c) }) { Icon(Icons.Filled.Edit, "Edit", tint = Color.White) }
                         IconButton(onClick = { onShowDetails(c) }) { Icon(Icons.Filled.Info, "Details", tint = Color.White) }
                         IconButton(onClick = { onVault(c) }) { Icon(Icons.Filled.Lock, "Move to vault", tint = Color.White) }
                         IconButton(onClick = { onDelete(c) }) { Icon(Icons.Filled.Delete, "Delete", tint = Color.White) }

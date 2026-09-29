@@ -123,6 +123,10 @@ dependencies {
     // In-app video playback
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // Video editor: live effect preview (effect) and re-encoding the edit to MP4 (transformer).
+    // Must stay on the same version as the other media3 modules.
+    implementation("androidx.media3:media3-effect:1.4.1")
+    implementation("androidx.media3:media3-transformer:1.4.1")
 
     // PDF editing (page ops, annotations, forms) — Apache PDFBox, Android port.
     // Exclude its bundled (older) BouncyCastle; reuse our bcprov-jdk18on to avoid duplicate classes.
