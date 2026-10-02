@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Lock
@@ -78,6 +79,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showVaultConfirm by remember { mutableStateOf(false) }
     var overflow by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
 
     // What the note looked like when it last matched the file; differing from it means unsaved typing.
     var cleanMarkdown by remember { mutableStateOf("") }
@@ -239,14 +241,20 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     IconButton(onClick = { save() }, enabled = loaded && !saving) {
                         Icon(Icons.Filled.Check, contentDescription = "Save")
                     }
-                    // Vault / delete / "share the file itself" live in the overflow so the bar still
-                    // fits once Share is a first-class action.
-                    if (existing != null) {
-                        Box {
-                            IconButton(onClick = { overflow = true }) {
-                                Icon(Icons.Filled.MoreVert, contentDescription = "More")
-                            }
-                            DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                    // Export / vault / delete / "share the file itself" live in the overflow so the
+                    // bar still fits once Share is a first-class action.
+                    Box {
+                        IconButton(onClick = { overflow = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Export…") },
+                                leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
+                                enabled = loaded,
+                                onClick = { overflow = false; showExport = true }
+                            )
+                            if (existing != null) {
                                 DropdownMenuItem(
                                     text = { Text("Share file (.${existing.extension.lowercase()})") },
                                     leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
@@ -333,6 +341,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
         }
     }
 
+    if (showExport) {
+        NoteExportDialog(
+            source = { ExportSource(title.trim().ifBlank { "Note" }, note.markdown, baseDir) },
+            onDismiss = { showExport = false }
+        )
+    }
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },

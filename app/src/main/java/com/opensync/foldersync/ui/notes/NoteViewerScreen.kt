@@ -69,6 +69,7 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
     val isText = listOf(".md", ".markdown", ".txt", ".rtf").any { lower.endsWith(it) }
     var converting by remember { mutableStateOf(false) }
     var shareMenu by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
 
     // Parse raw Samsung Notes files once so we can preview and convert them.
     val parsed: ParsedNote? = if (isRaw && file != null) {
@@ -78,6 +79,24 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
         }
         s
     } else null
+
+    // What Export turns into a PDF, Word file and so on: a text note's own words, or for an
+    // imported Samsung note its pictures followed by the text pulled out of it.
+    val exportMarkdown by produceState<String?>(initialValue = null, path, parsed) {
+        value = withContext(Dispatchers.IO) {
+            when {
+                isText && file != null -> runCatching {
+                    val raw = file.readText(Charsets.UTF_8)
+                    if (file.extension.equals("rtf", ignoreCase = true)) stripRtf(raw) else raw
+                }.getOrNull()
+                parsed != null -> buildString {
+                    parsed.imagePaths.forEach { append("![](").append(it).append(")\n\n") }
+                    append(parsed.text)
+                }.takeIf { it.isNotBlank() }
+                else -> null
+            }
+        }
+    }
 
     /** Send the note's words to apps that take text (messaging, mail, other note apps). */
     fun shareAsText() {
@@ -147,6 +166,12 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
                                     text = { Text("Share file (${file.extension.lowercase()})") },
                                     onClick = { shareMenu = false; ShareUtil.shareFiles(context, listOf(file)) }
                                 )
+                                if (exportMarkdown != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Export as PDF, Word…") },
+                                        onClick = { shareMenu = false; showExport = true }
+                                    )
+                                }
                             }
                         }
                     }
@@ -179,6 +204,14 @@ fun NoteViewerScreen(onBack: () -> Unit, onEdit: (String) -> Unit = {}) {
                 else -> TextNoteContent(file)
             }
         }
+    }
+
+    val md = exportMarkdown
+    if (showExport && file != null && md != null) {
+        NoteExportDialog(
+            source = { ExportSource(file.nameWithoutExtension, md, file.parentFile) },
+            onDismiss = { showExport = false }
+        )
     }
 }
 
