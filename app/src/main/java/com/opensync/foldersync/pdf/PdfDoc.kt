@@ -21,7 +21,12 @@ class PdfDoc private constructor(private val pfd: ParcelFileDescriptor) : Closea
 
     private val renderer = PdfRenderer(pfd)
     private val mutex = Mutex()
-    private val cache = LruCache<String, Bitmap>(8)
+    // Sized in bytes, not pages: one zoomed-in page can weigh as much as a dozen at screen size.
+    private val cache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 6).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    ) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    }
 
     val pageCount: Int get() = renderer.pageCount
 

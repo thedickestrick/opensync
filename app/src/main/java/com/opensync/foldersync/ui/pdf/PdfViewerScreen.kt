@@ -2,14 +2,22 @@ package com.opensync.foldersync.ui.pdf
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import com.opensync.foldersync.ui.common.verticalScrollbar
@@ -33,20 +41,38 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.pdf.PdfDoc
 import com.opensync.foldersync.pdf.PdfRequest
+import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.roundToInt
+
+private const val MAX_ZOOM = 5f
+private const val DOUBLE_TAP_ZOOM = 2.5f
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +88,7 @@ fun PdfViewerScreen(
     var doc by remember { mutableStateOf<PdfDoc?>(null) }
     var pageCount by remember { mutableStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
-    var zoom by remember { mutableStateOf(1f) }
+    var zoom by remember { mutableFloatStateOf(1f) }
     var menuOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(path) {
@@ -96,10 +122,10 @@ fun PdfViewerScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { zoom = (zoom - 0.25f).coerceAtLeast(1f) }) {
+                    IconButton(onClick = { zoom = (zoom / 1.25f).coerceAtLeast(1f) }, enabled = zoom > 1f) {
                         Icon(Icons.Filled.ZoomOut, contentDescription = "Zoom out")
                     }
-                    IconButton(onClick = { zoom = (zoom + 0.25f).coerceAtMost(4f) }) {
+                    IconButton(onClick = { zoom = (zoom * 1.25f).coerceAtMost(MAX_ZOOM) }, enabled = zoom < MAX_ZOOM) {
                         Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
                     }
                     Box {
@@ -146,24 +172,106 @@ fun PdfViewerScreen(
                 )
                 currentDoc == null || pageCount == 0 ->
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
-                else -> BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val baseWidthPx = constraints.maxWidth
-                    val listState = rememberLazyListState()
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().verticalScrollbar(listState),
-                        state = listState,
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        items(pageCount) { index ->
-                            PdfPageView(
-                                doc = currentDoc,
-                                index = index,
-                                widthPx = (baseWidthPx * zoom).toInt(),
-                                allowPan = zoom > 1f
-                            )
+                else -> ZoomablePages(currentDoc, pageCount, zoom, onZoom = { zoom = it })
+            }
+        }
+    }
+}
+
+/**
+ * The pages, zoomable by pinch, double-tap or the toolbar buttons. While fingers are down the view
+ * is only magnified (cheap and smooth); when they lift, the pages are laid out and drawn again at
+ * the new size so text is sharp, with the spot under the fingers kept where it was. Zoomed in, one
+ * finger pans in any direction.
+ */
+@Composable
+private fun ZoomablePages(doc: PdfDoc, pageCount: Int, zoom: Float, onZoom: (Float) -> Unit) {
+    val listState = rememberLazyListState()
+    val hScroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    // Live magnification during a pinch, and the point it's centred on.
+    var gestureScale by remember { mutableFloatStateOf(1f) }
+    var focus by remember { mutableStateOf(Offset.Zero) }
+    val latestZoom by rememberUpdatedState(zoom)
+
+    /** Settles on [newZoom], keeping the content under [at] (viewport coordinates) in place. */
+    fun commit(newZoom: Float, at: Offset) {
+        val target = newZoom.coerceIn(1f, MAX_ZOOM)
+        val factor = target / latestZoom
+        gestureScale = 1f
+        if (factor == 1f) return
+        val firstIndex = listState.firstVisibleItemIndex
+        val firstOffset = listState.firstVisibleItemScrollOffset
+        val x = hScroll.value
+        onZoom(target)
+        scope.launch {
+            withFrameNanos { }   // let the pages lay out at their new width first
+            withFrameNanos { }
+            hScroll.scrollTo(((x + at.x) * factor - at.x).roundToInt().coerceIn(0, hScroll.maxValue))
+            listState.scrollToItem(firstIndex, ((firstOffset + at.y) * factor - at.y).roundToInt().coerceAtLeast(0))
+        }
+    }
+
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .verticalScrollbar(listState)
+            .pointerInput(Unit) {
+                // Initial pass, so a pinch is seen before the list and never turns into a scroll.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var pinched = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val down = event.changes.filter { it.pressed }
+                        if (down.isEmpty()) break
+                        if (down.size >= 2) {
+                            if (!pinched) focus = event.calculateCentroid(useCurrent = true)
+                            pinched = true
+                            gestureScale = (gestureScale * event.calculateZoom())
+                                .coerceIn(1f / latestZoom, MAX_ZOOM / latestZoom)
+                            event.changes.forEach { it.consume() }
+                        } else if (pinched) {
+                            // One finger left over from a pinch shouldn't fling the list.
+                            event.changes.forEach { it.consume() }
                         }
                     }
+                    if (pinched) commit(latestZoom * gestureScale, focus)
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onDoubleTap = { at ->
+                    commit(if (latestZoom > 1.01f) 1f else DOUBLE_TAP_ZOOM, at)
+                })
+            }
+    ) {
+        val viewportPx = constraints.maxWidth
+        val contentWidth = with(density) { (viewportPx * zoom).toDp() }
+        // Sharp up to 2.5× the screen; beyond that a page bitmap costs more memory than it's worth.
+        val renderPx = (viewportPx * zoom).toInt().coerceAtMost((viewportPx * 2.5f).toInt().coerceAtMost(4096))
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = gestureScale
+                    scaleY = gestureScale
+                    transformOrigin = TransformOrigin(
+                        if (size.width > 0) focus.x / size.width else 0.5f,
+                        if (size.height > 0) focus.y / size.height else 0.5f
+                    )
+                }
+                .horizontalScroll(hScroll, enabled = zoom > 1f)
+        ) {
+            LazyColumn(
+                modifier = Modifier.requiredWidth(contentWidth).fillMaxHeight(),
+                state = listState,
+                contentPadding = PaddingValues(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                items(pageCount) { index ->
+                    PdfPageView(doc = doc, index = index, width = contentWidth, renderPx = renderPx)
                 }
             }
         }
@@ -171,26 +279,25 @@ fun PdfViewerScreen(
 }
 
 @Composable
-private fun PdfPageView(doc: PdfDoc, index: Int, widthPx: Int, allowPan: Boolean) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, index, widthPx) {
-        value = runCatching { doc.renderPage(index, widthPx) }.getOrNull()
+private fun PdfPageView(doc: PdfDoc, index: Int, width: Dp, renderPx: Int) {
+    // Kept across re-renders: the old bitmap stays up, stretched, until the sharper one is ready.
+    val bitmap by produceState<Bitmap?>(initialValue = null, index, renderPx) {
+        runCatching { doc.renderPage(index, renderPx) }.getOrNull()?.let { value = it }
     }
-    Box(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        val bmp = bitmap
-        if (bmp != null) {
-            val scroll = rememberScrollState()
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "Page ${index + 1}",
-                modifier = if (allowPan) Modifier.horizontalScroll(scroll) else Modifier
-            )
-        } else {
-            Box(Modifier.fillMaxWidth().height(320.dp), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
+    val bmp = bitmap
+    if (bmp != null) {
+        Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = "Page ${index + 1}",
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier
+                .padding(vertical = 4.dp)
+                .width(width)
+                .aspectRatio(bmp.width.toFloat() / bmp.height)
+        )
+    } else {
+        Box(Modifier.width(width).height(320.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
         }
     }
 }
