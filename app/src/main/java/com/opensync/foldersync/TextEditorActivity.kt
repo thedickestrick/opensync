@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import com.opensync.foldersync.share.ShareUtil
 import com.opensync.foldersync.ui.notes.MarkdownView
 import com.opensync.foldersync.ui.notes.RichNoteEditor
 import com.opensync.foldersync.ui.notes.RichNoteState
+import com.opensync.foldersync.ui.notes.UnsavedChangesDialog
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -60,10 +62,6 @@ class TextEditorActivity : ComponentActivity() {
             ?: intent?.getStringExtra("note_path")?.let { Uri.fromFile(java.io.File(it)) }
         if (uri == null) { finish(); return }
         val name = displayName(uri)
-        // The widgets explicitly request view mode; otherwise notes (.md/.txt) open rendered and plain
-        // data files (.json/.csv/…) open in edit.
-        val startInPreview = intent?.getBooleanExtra("view_mode", false) == true ||
-            name.lowercase().let { it.endsWith(".md") || it.endsWith(".markdown") || it.endsWith(".txt") }
         // A note in an account notes folder (typically opened from a home-screen widget) may be stale:
         // sync now, and let the screen pick up whatever that brings in.
         val sharedFolder = uri.takeIf { it.scheme == "file" }?.path?.let { RemoteNotes.folderFor(it) }
@@ -74,7 +72,6 @@ class TextEditorActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     TextEditorScreen(
                         title = name,
-                        initialPreview = startInPreview,
                         synced = synced,
                         read = { readText(uri) },
                         save = { text, keepDiskVersion -> writeText(uri, text, keepDiskVersion) },
@@ -148,7 +145,6 @@ private fun TextEditorScreen(
     /** (text, keepDiskVersion) — the flag asks for the file's current content to be kept as a conflict copy. */
     save: suspend (String, Boolean) -> String?,
     onBack: () -> Unit,
-    initialPreview: Boolean = false,
     /** Fires whenever the file may have been replaced underneath us by a sync. */
     synced: Flow<Unit>? = null
 ) {
@@ -156,8 +152,9 @@ private fun TextEditorScreen(
     val scope = rememberCoroutineScope()
     val note = remember { RichNoteState() }
     var loaded by remember { mutableStateOf(false) }
-    var preview by remember { mutableStateOf(initialPreview) }
+    var preview by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
+    var confirmLeave by remember { mutableStateOf(false) }
     // What the note looked like when it last matched the file; differing from it means unsaved typing.
     var cleanMarkdown by remember { mutableStateOf("") }
     var replacedWhileEditing by remember { mutableStateOf(false) }
@@ -199,12 +196,30 @@ private fun TextEditorScreen(
         }
     }
 
+    /** Save what's on screen; with [leave], close the editor once it's safely written. */
+    fun saveFromUi(leave: Boolean = false) {
+        saving = true
+        val md = note.markdown
+        scope.launch {
+            val error = saveNow(md)
+            saving = false
+            Toast.makeText(context, error ?: "Saved", Toast.LENGTH_LONG).show()
+            if (error == null && leave) onBack()
+        }
+    }
+
+    /** Back (arrow or gesture): ask before throwing away typing that isn't in the file yet. */
+    fun leave() {
+        if (loaded && note.markdown != cleanMarkdown) confirmLeave = true else onBack()
+    }
+    BackHandler { leave() }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { leave() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -220,18 +235,9 @@ private fun TextEditorScreen(
                             contentDescription = if (preview) "Edit" else "Preview"
                         )
                     }
-                    IconButton(
-                        onClick = {
-                            saving = true
-                            val md = note.markdown
-                            scope.launch {
-                                val error = saveNow(md)
-                                saving = false
-                                Toast.makeText(context, error ?: "Saved", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                        enabled = loaded && !saving
-                    ) { Icon(Icons.Filled.Check, contentDescription = "Save") }
+                    IconButton(onClick = { saveFromUi() }, enabled = loaded && !saving) {
+                        Icon(Icons.Filled.Check, contentDescription = "Save")
+                    }
                 }
             )
         }
@@ -252,5 +258,13 @@ private fun TextEditorScreen(
                 RichNoteEditor(state = note, modifier = Modifier.fillMaxWidth().weight(1f), placeholder = "Write…")
             }
         }
+    }
+
+    if (confirmLeave) {
+        UnsavedChangesDialog(
+            onSave = { confirmLeave = false; saveFromUi(leave = true) },
+            onDiscard = { confirmLeave = false; onBack() },
+            onCancel = { confirmLeave = false }
+        )
     }
 }

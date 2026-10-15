@@ -2,6 +2,7 @@ package com.opensync.foldersync.ui.notes
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -71,8 +72,8 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     val note = remember { RichNoteState() }
     var loaded by remember { mutableStateOf(existing == null) }
     var saving by remember { mutableStateOf(false) }
-    // Open saved notes in view (rendered) mode; start a brand-new note in edit mode.
-    var preview by remember { mutableStateOf(existing != null) }
+    // Every note opens ready to type; the eye button switches to the rendered view.
+    var preview by remember { mutableStateOf(false) }
     var showFind by remember { mutableStateOf(false) }
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
@@ -80,9 +81,12 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
     var showVaultConfirm by remember { mutableStateOf(false) }
     var overflow by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    var confirmLeave by remember { mutableStateOf(false) }
 
     // What the note looked like when it last matched the file; differing from it means unsaved typing.
     var cleanMarkdown by remember { mutableStateOf("") }
+    // Saving under a new title renames the file, so a changed title is unsaved too.
+    var cleanTitle by remember { mutableStateOf(title) }
     // A sync replaced the file while it was being edited: saving must keep that version too.
     var replacedWhileEditing by remember { mutableStateOf(false) }
 
@@ -195,6 +199,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             saving = false
             if (savedPath != null) {
                 cleanMarkdown = md
+                cleanTitle = title
                 replacedWhileEditing = false
                 RemoteNotes.notifyChanged(savedPath) // a note in an account folder goes up to the server now
                 com.opensync.foldersync.widget.NotesWidgetProvider.notifyChanged(context)
@@ -206,6 +211,13 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             }
         }
     }
+
+    /** Back (arrow or gesture): ask before throwing away typing that isn't in the file yet. */
+    fun leave() {
+        val dirty = loaded && (note.markdown != cleanMarkdown || title.trim() != cleanTitle.trim())
+        if (dirty) confirmLeave = true else onBack()
+    }
+    BackHandler { leave() }
 
     Scaffold(
         topBar = {
@@ -219,7 +231,7 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
                     Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { leave() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -369,6 +381,28 @@ fun NoteEditorScreen(onBack: () -> Unit, onSaved: (String) -> Unit) {
             dismissButton = { TextButton(onClick = { showVaultConfirm = false }) { Text("Cancel") } }
         )
     }
+    if (confirmLeave) {
+        UnsavedChangesDialog(
+            onSave = { confirmLeave = false; save() }, // save() leaves the screen once it's written
+            onDiscard = { confirmLeave = false; onBack() },
+            onCancel = { confirmLeave = false }
+        )
+    }
+}
+
+/** Asked on the way out of a note with unsaved changes. Tapping outside keeps editing. */
+@Composable
+fun UnsavedChangesDialog(onSave: () -> Unit, onDiscard: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Save changes?") },
+        text = { Text("This note has changes that haven't been saved.") },
+        confirmButton = { TextButton(onClick = onSave) { Text("Save") } },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+            TextButton(onClick = onDiscard) { Text("Don't save") }
+        }
+    )
 }
 
 @Composable

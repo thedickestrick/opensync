@@ -69,7 +69,6 @@ class NotesWidgetProvider : AppWidgetProvider() {
             val itemTemplate = PendingIntent.getActivity(
                 context, 0,
                 Intent(context, TextEditorActivity::class.java)
-                    .putExtra("view_mode", true) // open rendered so checkboxes are tappable
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
