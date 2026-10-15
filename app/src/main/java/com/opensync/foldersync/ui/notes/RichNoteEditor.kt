@@ -1,6 +1,9 @@
 package com.opensync.foldersync.ui.notes
 
+import android.os.SystemClock
 import android.widget.Toast
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,9 +44,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -197,6 +203,19 @@ class RichNoteState(initialMarkdown: String = "") {
 
     fun toggleCheckbox(lineIndex: Int) = apply(doc.toggleCheckbox(lineIndex), selection)
 
+    /** The start of the checklist line whose box sits at [offset] — where a tap on the box puts the caret. */
+    fun checkboxLineAt(offset: Int): Int? {
+        val ls = doc.lineStart(offset)
+        val glyph = doc.glyphAt(ls)
+        return if ((glyph == TODO || glyph == DONE) && offset - ls <= 1) ls else null
+    }
+
+    /** Ticks or unticks the box on the line starting at [lineStart], leaving the caret at the end of that item. */
+    fun tapCheckbox(lineStart: Int) {
+        val next = doc.toggleCheckbox(doc.text.substring(0, lineStart).count { it == '\n' })
+        apply(next, TextRange(next.lineEnd(lineStart)))
+    }
+
     // ------------------------------------------------------------ find & replace
 
     fun findNext(query: String) {
@@ -338,18 +357,49 @@ private fun RichNoteField(state: RichNoteState, placeholder: String, modifier: M
             else TransformedText(input, OffsetMapping.Identity)
         }
     }
+    // A checklist box is just a character, so a tap on it only moves the caret there. The field
+    // works out which character a tap hit (it knows its own scroll); this remembers where the
+    // finger went down so that caret move can be told apart from arrowing or typing.
+    var lastTouch by remember { mutableStateOf<Touch?>(null) }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Box(modifier) {
         if (doc.text.isEmpty()) Text(placeholder, style = body, color = colors.onSurfaceVariant)
         BasicTextField(
             value = state.fieldValue,
-            onValueChange = state::onFieldChange,
+            onValueChange = { v ->
+                val touch = lastTouch
+                val box = if (touch != null && v.text == state.text && v.selection.collapsed &&
+                    SystemClock.uptimeMillis() - touch.time < TAP_MS
+                ) {
+                    state.checkboxLineAt(v.selection.start)?.takeIf { ls ->
+                        // …and the finger was on the box itself, not just near the start of the line.
+                        val l = layout
+                        l == null || ls + 1 >= l.layoutInput.text.length || touch.x <= l.getBoundingBox(ls + 1).right
+                    }
+                } else null
+                if (box != null) {
+                    lastTouch = null
+                    state.tapCheckbox(box)
+                } else state.onFieldChange(v)
+            },
+            onTextLayout = { layout = it },
             textStyle = body.copy(color = colors.onSurface),
             cursorBrush = SolidColor(colors.primary),
             visualTransformation = painter,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    lastTouch = Touch(down.position.x, down.uptimeMillis)
+                }
+            }
         )
     }
 }
+
+private class Touch(val x: Float, val time: Long)
+
+/** Longer than this between finger-down and the caret moving isn't a tap on a box. */
+private const val TAP_MS = 600L
 
 private val BOLD = SpanStyle(fontWeight = FontWeight.Bold)
 private val ITALIC = SpanStyle(fontStyle = FontStyle.Italic)
