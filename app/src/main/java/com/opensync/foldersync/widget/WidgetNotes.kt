@@ -72,7 +72,7 @@ internal object WidgetNotes {
             .take(max)
     }
 
-    /** Larger body preview for the single-note widget (light markdown-marker cleanup). */
+    /** Note text for the single-note widget's scrolling body (light markdown-marker cleanup). */
     fun body(file: File, max: Int = 2000): String {
         val raw = runCatching { file.bufferedReader().use { it.readText() } }.getOrDefault("")
         return raw.lineSequence()

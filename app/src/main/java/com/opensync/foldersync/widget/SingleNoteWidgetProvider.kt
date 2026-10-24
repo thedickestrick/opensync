@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.view.View
 import android.widget.RemoteViews
 import com.opensync.foldersync.R
@@ -49,9 +50,23 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
             val path = AppPrefs(context).singleNoteWidgetPath(id)
             val file = path.takeIf { it.isNotBlank() }?.let { File(it) }
 
+            // Scrolling body backed by SingleNoteWidgetService; unique data URI per widget id.
+            val serviceIntent = Intent(context, SingleNoteWidgetService::class.java).apply {
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
+            }
+            views.setRemoteAdapter(R.id.single_body, serviceIntent)
+            // Lines supply note_path via fill-in intent (same template as the notes list widget).
+            val lineTemplate = PendingIntent.getActivity(
+                context, 0,
+                Intent(context, TextEditorActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            views.setPendingIntentTemplate(R.id.single_body, lineTemplate)
+
             if (file != null && file.isFile) {
                 views.setTextViewText(R.id.single_title, file.nameWithoutExtension)
-                views.setTextViewText(R.id.single_body, WidgetNotes.body(file))
                 val open = PendingIntent.getActivity(
                     context, id,
                     Intent(context, TextEditorActivity::class.java)
@@ -70,7 +85,6 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
             } else {
                 views.setViewVisibility(R.id.single_refresh, View.GONE)
                 views.setTextViewText(R.id.single_title, "Tap to choose a note")
-                views.setTextViewText(R.id.single_body, "")
                 val configure = PendingIntent.getActivity(
                     context, id,
                     Intent(context, SingleNoteWidgetConfigActivity::class.java)
@@ -81,6 +95,7 @@ class SingleNoteWidgetProvider : AppWidgetProvider() {
                 views.setOnClickPendingIntent(R.id.single_root, configure)
             }
             manager.updateAppWidget(id, views)
+            manager.notifyAppWidgetViewDataChanged(id, R.id.single_body)
         }
     }
 }

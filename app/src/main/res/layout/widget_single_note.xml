@@ -37,13 +37,13 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <TextView
+    <!-- One row per line of the note (SingleNoteWidgetService) so a long note scrolls.
+         wrap_content leaves the space under a short note tappable through single_root. -->
+    <ListView
         android:id="@+id/single_body"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:ellipsize="end"
-        android:textColor="#D9FFFFFF"
-        android:textSize="13sp"
-        android:lineSpacingExtra="2dp" />
+        android:layout_height="wrap_content"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:listSelector="@android:color/transparent" />
 </LinearLayout>
