@@ -6,6 +6,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -35,6 +38,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +51,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -366,7 +371,36 @@ private fun RichNoteField(state: RichNoteState, placeholder: String, modifier: M
     // Long-pressing a word selects it but, if the keyboard was dismissed earlier, leaves it hidden;
     // selecting is the start of editing, so bring it back.
     val keyboard = LocalSoftwareKeyboardController.current
-    Box(modifier) {
+    // The field grows to its full text height inside a scroll we own. Left to scroll itself, it
+    // only follows the caret when the caret moves — so when the keyboard opens and the editor
+    // shrinks above it, a selection made a moment earlier stays where it was, under the keyboard.
+    val scroll = rememberScrollState()
+    val margin = with(LocalDensity.current) { 24.dp.toPx() }
+    var prevSelection by remember { mutableStateOf(state.selection) }
+    BoxWithConstraints(modifier) {
+        val viewport = constraints.maxHeight
+        val viewportDp = maxHeight
+        LaunchedEffect(state.selection, layout, viewport) {
+            val l = layout ?: return@LaunchedEffect
+            val sel = state.selection
+            val len = l.layoutInput.text.length
+            // Follow the end that's moving (a dragged handle), else the end of the selection.
+            val active = (if (sel.start != prevSelection.start && sel.end == prevSelection.end) sel.start else sel.end)
+                .coerceIn(0, len)
+            prevSelection = sel
+            val caret = l.getCursorRect(active)
+            // Show the whole selection when it fits, otherwise the moving end.
+            val top = minOf(caret.top, l.getCursorRect(sel.min.coerceIn(0, len)).top)
+            val bottom = maxOf(caret.bottom, l.getCursorRect(sel.max.coerceIn(0, len)).bottom)
+            val (from, to) = if (bottom - top + 2 * margin <= viewport) top to bottom else caret.top to caret.bottom
+            val target = when {
+                to + margin > scroll.value + viewport -> (to + margin - viewport).toInt()
+                from - margin < scroll.value -> (from - margin).toInt()
+                else -> return@LaunchedEffect
+            }
+            scroll.scrollTo(target.coerceIn(0, scroll.maxValue))
+        }
+        Box(Modifier.fillMaxSize().verticalScroll(scroll)) {
         if (doc.text.isEmpty()) Text(placeholder, style = body, color = colors.onSurfaceVariant)
         BasicTextField(
             value = state.fieldValue,
@@ -393,13 +427,15 @@ private fun RichNoteField(state: RichNoteState, placeholder: String, modifier: M
             textStyle = body.copy(color = colors.onSurface),
             cursorBrush = SolidColor(colors.primary),
             visualTransformation = painter,
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+            // At least the visible height, so a tap below a short note still lands in the field.
+            modifier = Modifier.fillMaxWidth().heightIn(min = viewportDp).pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     lastTouch = Touch(down.position.x, down.uptimeMillis)
                 }
             }
         )
+        }
     }
 }
 
