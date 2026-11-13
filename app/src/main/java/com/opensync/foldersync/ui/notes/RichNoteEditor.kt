@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -362,6 +363,9 @@ private fun RichNoteField(state: RichNoteState, placeholder: String, modifier: M
     // finger went down so that caret move can be told apart from arrowing or typing.
     var lastTouch by remember { mutableStateOf<Touch?>(null) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    // Long-pressing a word selects it but, if the keyboard was dismissed earlier, leaves it hidden;
+    // selecting is the start of editing, so bring it back.
+    val keyboard = LocalSoftwareKeyboardController.current
     Box(modifier) {
         if (doc.text.isEmpty()) Text(placeholder, style = body, color = colors.onSurfaceVariant)
         BasicTextField(
@@ -380,7 +384,10 @@ private fun RichNoteField(state: RichNoteState, placeholder: String, modifier: M
                 if (box != null) {
                     lastTouch = null
                     state.tapCheckbox(box)
-                } else state.onFieldChange(v)
+                } else {
+                    if (!v.selection.collapsed && state.selection.collapsed) keyboard?.show()
+                    state.onFieldChange(v)
+                }
             },
             onTextLayout = { layout = it },
             textStyle = body.copy(color = colors.onSurface),
