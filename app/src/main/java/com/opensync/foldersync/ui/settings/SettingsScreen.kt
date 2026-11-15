@@ -56,6 +56,7 @@ import com.opensync.foldersync.Graph
 import com.opensync.foldersync.backup.SettingsBackup
 import com.opensync.foldersync.ui.PermissionUtil
 import com.opensync.foldersync.update.AppPrefs
+import com.opensync.foldersync.update.AppUpdater
 import com.opensync.foldersync.update.UpdateChecker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,31 +64,18 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
-data class UpdateUiState(
-    val owner: String,
-    val repo: String,
-    val current: String,
-    val checking: Boolean = false,
-    val downloading: Boolean = false,
-    val progress: Int = 0,
-    val status: String? = null,
-    val available: UpdateChecker.Release? = null
-)
+data class UpdateSource(val owner: String, val repo: String)
 
 class SettingsViewModel : ViewModel() {
 
     private val prefs = AppPrefs(Graph.appContext)
 
-    private val _update = MutableStateFlow(
-        UpdateUiState(
-            owner = prefs.updateOwner,
-            repo = prefs.updateRepo,
-            current = UpdateChecker.currentVersion(Graph.appContext)
-        )
-    )
-    val update = _update.asStateFlow()
+    private val _source = MutableStateFlow(UpdateSource(prefs.updateOwner, prefs.updateRepo))
+    val source = _source.asStateFlow()
+
+    /** Shared with the check that runs when the app is opened. */
+    val update = AppUpdater.state
 
     fun syncAllNow() = viewModelScope.launch {
         Graph.database.folderPairDao().getAll().forEach { Graph.syncManager.enqueueOneTime(it.id) }
@@ -120,71 +108,27 @@ class SettingsViewModel : ViewModel() {
             }
             val result = SettingsBackup.restore(bytes, passphrase.toCharArray())
             // The update source may have just been filled in.
-            _update.update { it.copy(owner = prefs.updateOwner, repo = prefs.updateRepo) }
+            _source.value = UpdateSource(prefs.updateOwner, prefs.updateRepo)
+            AppUpdater.sourceChanged()
             result.summary()
         }.getOrElse { it.message ?: "Couldn't load settings" }
     }
 
     fun setOwner(v: String) {
         prefs.updateOwner = v.trim()
-        _update.update { it.copy(owner = v, status = null, available = null) }
+        _source.update { it.copy(owner = v) }
+        AppUpdater.sourceChanged()
     }
 
     fun setRepo(v: String) {
         prefs.updateRepo = v.trim()
-        _update.update { it.copy(repo = v, status = null, available = null) }
+        _source.update { it.copy(repo = v) }
+        AppUpdater.sourceChanged()
     }
 
-    fun checkForUpdates() {
-        val s = _update.value
-        if (s.owner.isBlank() || s.repo.isBlank()) {
-            _update.update { it.copy(status = "Enter a GitHub owner and repository first") }
-            return
-        }
-        viewModelScope.launch {
-            _update.update { it.copy(checking = true, status = null, available = null) }
-            try {
-                val release = UpdateChecker.latestRelease(s.owner.trim(), s.repo.trim())
-                if (release == null) {
-                    _update.update {
-                        it.copy(checking = false, available = null,
-                            status = "No releases published in ${s.owner}/${s.repo} yet")
-                    }
-                    return@launch
-                }
-                val newer = UpdateChecker.isNewer(release.tag, s.current)
-                _update.update {
-                    it.copy(
-                        checking = false,
-                        available = if (newer && release.apkUrl != null) release else null,
-                        status = when {
-                            release.apkUrl == null -> "Latest release (${release.tag}) has no APK asset"
-                            newer -> "Update available: ${release.tag}"
-                            else -> "You're up to date (${s.current})"
-                        }
-                    )
-                }
-            } catch (e: Exception) {
-                _update.update { it.copy(checking = false, status = "Check failed: ${e.message}") }
-            }
-        }
-    }
+    fun checkForUpdates() = _source.value.let { AppUpdater.check(it.owner.trim(), it.repo.trim()) }
 
-    fun downloadAndInstall(context: android.content.Context) {
-        val release = _update.value.available ?: return
-        val url = release.apkUrl ?: return
-        viewModelScope.launch {
-            _update.update { it.copy(downloading = true, progress = 0, status = "Downloading…") }
-            try {
-                val apk = File(File(Graph.appContext.cacheDir, "update"), "opensync-${release.tag}.apk")
-                UpdateChecker.download(url, apk) { p -> _update.update { it.copy(progress = p) } }
-                _update.update { it.copy(downloading = false, status = "Starting installer…") }
-                UpdateChecker.installApk(context, apk)
-            } catch (e: Exception) {
-                _update.update { it.copy(downloading = false, status = "Download failed: ${e.message}") }
-            }
-        }
-    }
+    fun downloadAndInstall() = AppUpdater.downloadAndInstall()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -195,6 +139,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val updateState by vm.update.collectAsState()
+    val source by vm.source.collectAsState()
 
     var filesGranted by remember { mutableStateOf(PermissionUtil.hasAllFilesAccess()) }
     val filesLauncher = rememberLauncherForActivityResult(
@@ -209,7 +154,7 @@ fun SettingsScreen(
     val installSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        if (UpdateChecker.canInstall(context)) vm.downloadAndInstall(context)
+        if (UpdateChecker.canInstall(context)) vm.downloadAndInstall()
     }
 
     var batteryUnrestricted by remember { mutableStateOf(isIgnoringBattery(context)) }
@@ -319,25 +264,26 @@ fun SettingsScreen(
             HorizontalDivider()
             Text("App updates (GitHub)", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Point this at the GitHub repo where you publish releases. Each release should attach the new .apk.",
+                "Point this at the GitHub repo where you publish releases. Each release should attach the new .apk. " +
+                    "The app checks it whenever it's opened and offers new versions.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedTextField(
-                value = updateState.owner,
+                value = source.owner,
                 onValueChange = vm::setOwner,
                 label = { Text("GitHub owner / username") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
             OutlinedTextField(
-                value = updateState.repo,
+                value = source.repo,
                 onValueChange = vm::setRepo,
                 label = { Text("Repository name") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-            Text("Installed version: ${updateState.current}", style = MaterialTheme.typography.bodyMedium)
+            Text("Installed version: ${AppUpdater.currentVersion}", style = MaterialTheme.typography.bodyMedium)
 
             Button(
                 onClick = { vm.checkForUpdates() },
@@ -367,7 +313,7 @@ fun SettingsScreen(
                     Button(
                         onClick = {
                             if (UpdateChecker.canInstall(context)) {
-                                vm.downloadAndInstall(context)
+                                vm.downloadAndInstall()
                             } else {
                                 installSettingsLauncher.launch(UpdateChecker.unknownSourcesIntent(context))
                             }
@@ -381,7 +327,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
             Text("About", style = MaterialTheme.typography.titleMedium)
-            Text("OpenSync ${updateState.current}", style = MaterialTheme.typography.bodyMedium)
+            Text("OpenSync ${AppUpdater.currentVersion}", style = MaterialTheme.typography.bodyMedium)
             Text(
                 "A free, ad-free file manager, gallery and folder-sync app. " +
                     "Local, SMB (Windows), FTP, SFTP and WebDAV.",

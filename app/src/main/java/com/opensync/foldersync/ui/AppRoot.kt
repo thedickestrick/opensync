@@ -247,6 +247,8 @@ fun AppRoot() {
             }
         }
     }
+
+    UpdatePrompt()
 }
 
 @Composable

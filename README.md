@@ -45,6 +45,8 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
 - Point **Settings → App updates** at the GitHub repo where you publish releases.
 - The app checks the latest release, compares versions, downloads the attached **.apk**, and
   launches the installer — **no sideloading of files by hand**.
+- It checks every time the app is opened and pops up an **Update available** prompt when a newer
+  release is out (**Later** skips it until the next launch).
 
 ### Everywhere
 - Material 3 UI (light/dark/dynamic color), navigation drawer, encrypted credential storage
