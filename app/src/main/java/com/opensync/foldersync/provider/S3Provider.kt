@@ -161,8 +161,8 @@ class S3Provider(
         }
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
-        putObject(fullKey(relPath), src.asRequestBody(OCTET))
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
+        putObject(fullKey(relPath), src.asRequestBody(OCTET).reportingProgress(onProgress))
     }
 
     override fun close() { /* OkHttp pools are idle-collected */ }

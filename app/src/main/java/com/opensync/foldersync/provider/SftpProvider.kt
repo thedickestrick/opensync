@@ -102,9 +102,10 @@ class SftpProvider(
         channel().get(full(relPath), dest.absolutePath)
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         makeDir(parentOf(relPath))
-        channel().put(src.absolutePath, full(relPath))
+        if (onProgress == null) channel().put(src.absolutePath, full(relPath))
+        else src.inputStream().reportingProgress(onProgress).use { channel().put(it, full(relPath)) }
         if (mtime > 0) {
             runCatching { channel().setMtime(full(relPath), (mtime / 1000L).toInt()) }
         }

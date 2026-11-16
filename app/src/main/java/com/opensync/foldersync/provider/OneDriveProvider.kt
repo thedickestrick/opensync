@@ -127,10 +127,10 @@ class OneDriveProvider(
         throw IOException("OneDrive download failed for $relPath")
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val total = src.length()
         if (total <= SIMPLE_MAX) {
-            requestString("PUT", itemUrl(relPath, "/content"), src.asRequestBody(OCTET))
+            requestString("PUT", itemUrl(relPath, "/content"), src.asRequestBody(OCTET).reportingProgress(onProgress))
             return
         }
         val sessionBody = JSONObject().put(
@@ -144,7 +144,7 @@ class OneDriveProvider(
                 val chunk = readChunk(input, CHUNK)
                 if (chunk.isEmpty()) break
                 val end = start + chunk.size - 1
-                putChunk(uploadUrl, chunk, start, end, total)
+                putChunk(uploadUrl, chunk, start, end, total, onProgress)
                 start += chunk.size
             }
         }
@@ -154,10 +154,10 @@ class OneDriveProvider(
 
     // ---- helpers ----
 
-    private fun putChunk(uploadUrl: String, chunk: ByteArray, start: Long, end: Long, total: Long) {
+    private fun putChunk(uploadUrl: String, chunk: ByteArray, start: Long, end: Long, total: Long, onProgress: UploadProgress?) {
         val req = Request.Builder().url(uploadUrl)
             .header("Content-Range", "bytes $start-$end/$total")
-            .put(chunk.toRequestBody(OCTET))
+            .put(chunk.toRequestBody(OCTET).reportingProgress(onProgress, alreadySent = start))
             .build()
         client.newCall(req).execute().use { resp ->
             if (resp.code != 200 && resp.code != 201 && resp.code != 202) {

@@ -128,16 +128,16 @@ class GoogleDriveProvider(
         throw IOException("Drive download failed for $relPath")
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val name = PathUtil.name(relPath)
         val parentId = resolveFolder(parentOf(relPath), create = true)
             ?: throw IOException("Drive: parent folder missing for $relPath")
         val existing = childByName(parentId, name)
         if (existing != null && existing.optString("mimeType") != FOLDER_MIME) {
-            resumableUpload(src, "PATCH", "$UPLOAD/files/${existing.getString("id")}?uploadType=resumable", JSONObject())
+            resumableUpload(src, "PATCH", "$UPLOAD/files/${existing.getString("id")}?uploadType=resumable", JSONObject(), onProgress)
         } else {
             val meta = JSONObject().put("name", name).put("parents", JSONArray().put(parentId))
-            resumableUpload(src, "POST", "$UPLOAD/files?uploadType=resumable", meta)
+            resumableUpload(src, "POST", "$UPLOAD/files?uploadType=resumable", meta, onProgress)
         }
     }
 
@@ -145,7 +145,7 @@ class GoogleDriveProvider(
 
     // ---- resumable upload ----
 
-    private fun resumableUpload(src: File, method: String, initUrl: String, metadata: JSONObject) {
+    private fun resumableUpload(src: File, method: String, initUrl: String, metadata: JSONObject, onProgress: UploadProgress?) {
         val location = run {
             var loc: String? = null
             for (attempt in 0..1) {
@@ -169,7 +169,7 @@ class GoogleDriveProvider(
         for (attempt in 0..1) {
             val put = Request.Builder().url(location)
                 .header("Authorization", "Bearer ${token()}")
-                .put(src.asRequestBody(OCTET))
+                .put(src.asRequestBody(OCTET).reportingProgress(onProgress))
                 .build()
             client.newCall(put).execute().use { resp ->
                 if (resp.code == 401 && attempt == 0) { invalidateToken(); return@use }

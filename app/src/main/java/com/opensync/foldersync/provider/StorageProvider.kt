@@ -43,8 +43,11 @@ interface StorageProvider : Closeable {
     /** Download the remote file at [relPath] into local [dest]. */
     fun download(relPath: String, dest: File)
 
-    /** Upload local [src] to [relPath], creating parent dirs; sets mtime when supported. */
-    fun upload(src: File, relPath: String, mtime: Long)
+    /**
+     * Upload local [src] to [relPath], creating parent dirs; sets mtime when supported.
+     * [onProgress], if given, hears how many bytes have been sent so far.
+     */
+    fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress? = null)
 
     override fun close()
 }

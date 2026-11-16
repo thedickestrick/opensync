@@ -145,19 +145,20 @@ class DropboxProvider(
         throw IOException("Dropbox download failed for $relPath")
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val path = dbxPath(relPath)
         if (src.length() <= SINGLE_MAX) {
             val arg = uploadArg(path)
-            contentPost("$CONTENT/2/files/upload", arg, src.asRequestBody(OCTET))
+            contentPost("$CONTENT/2/files/upload", arg, src.asRequestBody(OCTET).reportingProgress(onProgress))
             return
         }
         // Large file: chunked upload session.
         src.inputStream().buffered().use { input ->
             val first = readChunk(input, CHUNK)
             val startArg = JSONObject().put("close", false).toString()
-            val sessionId = JSONObject(contentPost("$CONTENT/2/files/upload_session/start", startArg, first.toRequestBody(OCTET)))
-                .optString("session_id")
+            val sessionId = JSONObject(
+                contentPost("$CONTENT/2/files/upload_session/start", startArg, first.toRequestBody(OCTET).reportingProgress(onProgress))
+            ).optString("session_id")
             var offset = first.size.toLong()
             while (true) {
                 val chunk = readChunk(input, CHUNK)
@@ -165,7 +166,10 @@ class DropboxProvider(
                 val appendArg = JSONObject()
                     .put("cursor", JSONObject().put("session_id", sessionId).put("offset", offset))
                     .put("close", false).toString()
-                contentPost("$CONTENT/2/files/upload_session/append_v2", appendArg, chunk.toRequestBody(OCTET))
+                contentPost(
+                    "$CONTENT/2/files/upload_session/append_v2", appendArg,
+                    chunk.toRequestBody(OCTET).reportingProgress(onProgress, alreadySent = offset)
+                )
                 offset += chunk.size
             }
             val finishArg = JSONObject()

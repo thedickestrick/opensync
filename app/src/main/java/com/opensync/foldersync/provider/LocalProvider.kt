@@ -87,10 +87,11 @@ class LocalProvider(rootPath: String) : StorageProvider {
         fileFor(relPath).copyTo(dest, overwrite = true)
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val target = fileFor(relPath)
         target.parentFile?.mkdirs()
-        src.copyTo(target, overwrite = true)
+        if (onProgress == null) src.copyTo(target, overwrite = true)
+        else src.inputStream().reportingProgress(onProgress).use { input -> target.outputStream().use { input.copyTo(it) } }
         if (mtime > 0) target.setLastModified(mtime)
     }
 

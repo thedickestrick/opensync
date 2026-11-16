@@ -119,9 +119,9 @@ class FtpProvider(
         }
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         makeDir(parentOf(relPath))
-        FileInputStream(src).use { input ->
+        FileInputStream(src).reportingProgress(onProgress).use { input ->
             if (!client().storeFile(full(relPath), input)) {
                 throw IOException("FTP upload failed: $relPath (${client().replyString})")
             }

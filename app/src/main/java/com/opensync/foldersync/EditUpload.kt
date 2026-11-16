@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import com.opensync.foldersync.provider.ProviderFactory
+import com.opensync.foldersync.ui.formatBytes
 import com.opensync.foldersync.util.PathUtil
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -98,10 +99,20 @@ internal fun uniqueName(taken: Collection<String>, base: String, ext: String): S
     return candidate
 }
 
+/** How far an upload has got, for a progress bar. */
+internal data class UploadStatus(val sent: Long, val total: Long) {
+    val fraction: Float get() = if (total > 0) (sent.toFloat() / total).coerceIn(0f, 1f) else 0f
+    val percent: Int get() = (fraction * 100).toInt()
+
+    /** E.g. "12.3 MB of 48.0 MB". */
+    val sizes: String get() = "${formatBytes(sent)} of ${formatBytes(total)}"
+}
+
 /**
  * Uploads [rendered] (a finished edit in a temporary file) to [cloud]'s account: over the original
  * when [overwrite], else as "[copyBase].[ext]" (numbered if taken) in the original's folder. If the
  * upload fails, the edit is kept on the phone in [fallbackDir]/OpenSync instead, so it's never lost.
+ * [onUploadProgress] hears how far the upload has got — at most once per 0.1%, from a background thread.
  */
 internal suspend fun deliverToCloud(
     context: Context,
@@ -111,11 +122,12 @@ internal suspend fun deliverToCloud(
     copyBase: String,
     ext: String,
     fallbackDir: String,
-    onUploading: () -> Unit = {}
+    onUploading: () -> Unit = {},
+    onUploadProgress: ((UploadStatus) -> Unit)? = null
 ): SavedEdit {
     onUploading()
     return try {
-        SavedEdit(cloudName = uploadEdit(cloud, rendered, overwrite, copyBase, ext), overwrote = overwrite)
+        SavedEdit(cloudName = uploadEdit(cloud, rendered, overwrite, copyBase, ext, onUploadProgress), overwrote = overwrite)
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {
@@ -128,10 +140,18 @@ internal suspend fun deliverToCloud(
 }
 
 /** Returns the name the edit was uploaded as. Tries twice, the second time on a fresh connection. */
-private suspend fun uploadEdit(cloud: CloudOrigin, file: File, overwrite: Boolean, copyBase: String, ext: String): String =
+private suspend fun uploadEdit(
+    cloud: CloudOrigin,
+    file: File,
+    overwrite: Boolean,
+    copyBase: String,
+    ext: String,
+    onUploadProgress: ((UploadStatus) -> Unit)?
+): String =
     withContext(Dispatchers.IO) {
         val account = Graph.database.accountDao().getById(cloud.accountId)
             ?: throw IOException("the account was removed")
+        val total = file.length()
         var target: String? = if (overwrite) cloud.relPath else null
         var failure: Exception? = null
         repeat(2) {
@@ -143,7 +163,18 @@ private suspend fun uploadEdit(cloud: CloudOrigin, file: File, overwrite: Boolea
                     cloud.folder,
                     uniqueName(provider.listDir(cloud.folder).map { it.name }, copyBase, ext)
                 ).also { target = it }
-                provider.upload(file, path, System.currentTimeMillis())
+                // Providers report every few KB; pass on only changes of a tenth of a percent.
+                val progress = onUploadProgress?.let { report ->
+                    var shown = -1L
+                    val step = (total / 1000).coerceAtLeast(1L)
+                    val listener: (Long) -> Unit = { sent ->
+                        val notch = sent.coerceAtMost(total) / step
+                        if (notch != shown) { shown = notch; report(UploadStatus(sent.coerceAtMost(total), total)) }
+                    }
+                    listener
+                }
+                progress?.invoke(0L)
+                provider.upload(file, path, System.currentTimeMillis(), progress)
                 return@withContext PathUtil.name(path)
             } catch (e: Exception) {
                 failure = e

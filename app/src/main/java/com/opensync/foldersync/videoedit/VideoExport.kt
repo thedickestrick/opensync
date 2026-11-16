@@ -38,6 +38,7 @@ import androidx.media3.transformer.Transformer
 import com.google.common.collect.ImmutableList
 import com.opensync.foldersync.CloudOrigin
 import com.opensync.foldersync.SavedEdit
+import com.opensync.foldersync.UploadStatus
 import com.opensync.foldersync.deliverToCloud
 import com.opensync.foldersync.isInAppStorage
 import com.opensync.foldersync.scanFile
@@ -316,7 +317,8 @@ private fun baseName(uri: Uri, fallback: String) =
 
 /**
  * Exports the edited video and puts it over the original or beside it as a copy. A video downloaded
- * from one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when.
+ * from one of the user's accounts ([cloud]) is uploaded back there: [onUploading] says when it starts
+ * connecting, [onUploadProgress] how far it has got.
  */
 internal suspend fun saveEditedVideo(
     context: Context,
@@ -327,13 +329,19 @@ internal suspend fun saveEditedVideo(
     overwrite: Boolean,
     cloud: CloudOrigin?,
     onProgress: (Int) -> Unit,
-    onUploading: () -> Unit
+    onUploading: () -> Unit,
+    onUploadProgress: (UploadStatus) -> Unit
 ): SavedEdit {
     val tmp = tempFile(context, "mp4")
     try {
         runTransformer(context, buildComposition(context, uri, edits, meta, res, gif = false), tmp, onProgress)
         val base = "${baseName(uri, "video")}_edited"
-        if (cloud != null) return deliverToCloud(context, cloud, tmp, overwrite, base, "mp4", Environment.DIRECTORY_MOVIES, onUploading)
+        if (cloud != null) {
+            return deliverToCloud(
+                context, cloud, tmp, overwrite, base, "mp4", Environment.DIRECTORY_MOVIES,
+                onUploading, onUploadProgress
+            )
+        }
         return withContext(Dispatchers.IO) {
             when {
                 overwrite && uri.scheme == "file" -> {
@@ -360,9 +368,22 @@ internal suspend fun saveEditedVideo(
 }
 
 /** Puts a finished extra (a GIF, a captured frame) next to the video: locally, or on its account. */
-private suspend fun keepBeside(context: Context, uri: Uri, cloud: CloudOrigin?, made: File, suffix: String, ext: String): SavedEdit {
+private suspend fun keepBeside(
+    context: Context,
+    uri: Uri,
+    cloud: CloudOrigin?,
+    made: File,
+    suffix: String,
+    ext: String,
+    onUploadProgress: ((UploadStatus) -> Unit)? = null
+): SavedEdit {
     val base = "${baseName(uri, "video")}_$suffix"
-    if (cloud != null) return deliverToCloud(context, cloud, made, overwrite = false, base, ext, Environment.DIRECTORY_PICTURES)
+    if (cloud != null) {
+        return deliverToCloud(
+            context, cloud, made, overwrite = false, base, ext, Environment.DIRECTORY_PICTURES,
+            onUploadProgress = onUploadProgress
+        )
+    }
     return withContext(Dispatchers.IO) {
         val f = uniqueFile(copyDir(context, uri, Environment.DIRECTORY_PICTURES), base, ext)
         made.copyTo(f, overwrite = true)
@@ -381,7 +402,8 @@ internal suspend fun saveEditedGif(
     edits: VideoEdits,
     meta: VideoMeta,
     cloud: CloudOrigin?,
-    onProgress: (Int) -> Unit
+    onProgress: (Int) -> Unit,
+    onUploadProgress: (UploadStatus) -> Unit
 ): SavedEdit {
     val tmp = tempFile(context, "mp4")
     val out = tempFile(context, "gif")
@@ -417,7 +439,7 @@ internal suspend fun saveEditedGif(
                 runCatching { r.release() }
             }
         }
-        return keepBeside(context, uri, cloud, out, "edited", "gif")
+        return keepBeside(context, uri, cloud, out, "edited", "gif", onUploadProgress)
     } finally {
         tmp.delete()
         out.delete()

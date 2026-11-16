@@ -223,7 +223,7 @@ class SmbProvider(
         }
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val (share, inPath) = resolve(relPath)
         if (share == null) throw IOException("Cannot write at the server root")
         makeDir(parentOf(relPath))
@@ -236,7 +236,7 @@ class SmbProvider(
             null
         )
         try {
-            f.outputStream.use { out -> src.inputStream().use { input -> input.copyTo(out) } }
+            f.outputStream.use { out -> src.inputStream().reportingProgress(onProgress).use { input -> input.copyTo(out) } }
         } finally {
             f.close()
         }

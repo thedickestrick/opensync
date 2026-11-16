@@ -148,12 +148,12 @@ class WebDavProvider(
         }
     }
 
-    override fun upload(src: File, relPath: String, mtime: Long) {
+    override fun upload(src: File, relPath: String, mtime: Long, onProgress: UploadProgress?) {
         val parent = PathUtil.name(relPath).let { relPath.trim('/').removeSuffix(it).trim('/') }
         if (parent.isNotEmpty()) makeDir(parent)
         val req = Request.Builder()
             .url(url(relPath, dir = false))
-            .put(src.asRequestBody(OCTET))
+            .put(src.asRequestBody(OCTET).reportingProgress(onProgress))
             .authed()
             .build()
         client.newCall(req).execute().use { resp ->

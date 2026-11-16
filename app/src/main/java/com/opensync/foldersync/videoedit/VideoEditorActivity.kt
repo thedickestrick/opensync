@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -112,6 +113,7 @@ import com.opensync.foldersync.EditHistory
 import com.opensync.foldersync.EditorToolBar
 import com.opensync.foldersync.FilterPanel
 import com.opensync.foldersync.SavedEdit
+import com.opensync.foldersync.UploadStatus
 import com.opensync.foldersync.TonePanel
 import com.opensync.foldersync.UploadFailedDialog
 import com.opensync.foldersync.autoTone
@@ -214,6 +216,7 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
     var saving by remember { mutableStateOf(false) }
     var progress by remember { mutableIntStateOf(0) }
     var uploading by remember { mutableStateOf(false) }
+    var upload by remember { mutableStateOf<UploadStatus?>(null) } // null while still connecting
     var uploadFailure by remember { mutableStateOf<Pair<SavedEdit, Boolean>?>(null) } // and whether to close after
     var showSave by remember { mutableStateOf(false) }
     var resolution by remember { mutableStateOf(RESOLUTIONS.first()) }
@@ -358,6 +361,7 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
         saving = true
         progress = 0
         uploading = false
+        upload = null
         // Free the preview's decoder for the export; many devices only have a couple.
         player.pause()
         player.stop()
@@ -392,7 +396,12 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
         val e = edits
         val res = resolution
         runSave(if (overwrite) "Video" else "Copy", closeAfter = true) {
-            saveEditedVideo(context, uri, e, m, res, overwrite, cloud, onProgress = { progress = it }, onUploading = { uploading = true })
+            saveEditedVideo(
+                context, uri, e, m, res, overwrite, cloud,
+                onProgress = { progress = it },
+                onUploading = { uploading = true },
+                onUploadProgress = { upload = it }
+            )
         }
     }
 
@@ -400,7 +409,11 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
         val m = meta ?: return
         val e = edits
         runSave("GIF", closeAfter = false) {
-            saveEditedGif(context, uri, e, m, cloud) { progress = it; if (cloud != null && it >= 100) uploading = true }
+            saveEditedGif(
+                context, uri, e, m, cloud,
+                onProgress = { progress = it; if (cloud != null && it >= 100) uploading = true },
+                onUploadProgress = { upload = it }
+            )
         }
     }
 
@@ -526,14 +539,16 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
                         .pointerInput(Unit) { awaitEachGesture { awaitFirstDown().consume() } },
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color.White)
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            if (uploading) "Uploading to ${cloud?.accountName}…" else "Saving… $progress%",
-                            color = Color.White, fontSize = 13.sp
-                        )
-                    }
+                    SaveProgress(
+                        title = if (uploading) "Uploading to ${cloud?.accountName}…" else "Saving…",
+                        // Unknown while the upload is still connecting to the account.
+                        fraction = if (uploading) upload?.fraction else progress / 100f,
+                        detail = when {
+                            !uploading -> "$progress%"
+                            upload == null -> "Connecting…"
+                            else -> upload!!.let { "${it.percent}%  ·  ${it.sizes}" }
+                        }
+                    )
                 }
             }
         }
@@ -922,5 +937,28 @@ private fun VolumeRow(label: String, value: Float, onValue: (Float) -> Unit) {
         Text(label, color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(90.dp))
         Slider(value = value, onValueChange = onValue, valueRange = 0f..1f, modifier = Modifier.weight(1f))
         Text("${(value * 100).roundToInt()}%", color = Color(0xFF999999), fontSize = 12.sp, modifier = Modifier.width(40.dp))
+    }
+}
+
+/** The bar shown over the preview while saving: [fraction] null means it can't tell yet. */
+@Composable
+private fun SaveProgress(title: String, fraction: Float?, detail: String) {
+    Column(Modifier.width(260.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(title, color = Color.White, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(12.dp))
+        val barModifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+        if (fraction == null) {
+            LinearProgressIndicator(barModifier, color = Color.White, trackColor = Color(0x40FFFFFF))
+        } else {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = barModifier,
+                color = Color.White,
+                trackColor = Color(0x40FFFFFF),
+                drawStopIndicator = {}
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(detail, color = Color(0xFFCCCCCC), fontSize = 13.sp)
     }
 }
