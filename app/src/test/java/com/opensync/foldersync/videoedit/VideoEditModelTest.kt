@@ -1,7 +1,9 @@
 package com.opensync.foldersync.videoedit
 
 import com.opensync.foldersync.ColorEdits
+import com.opensync.foldersync.EditHistory
 import com.opensync.foldersync.NormRect
+import com.opensync.foldersync.ToneEdits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -35,7 +37,7 @@ class VideoEditModelTest {
 
     @Test
     fun historyCollapsesQuickChangesAndSupportsRedo() {
-        val h = EditHistory()
+        val h = EditHistory<VideoEdits>()
         val a = VideoEdits()
         val b = a.copy(speed = 2f)
         val c = b.copy(color = ColorEdits(brightness = 0.1f))
@@ -58,7 +60,7 @@ class VideoEditModelTest {
 
     @Test
     fun quickChangesFromDifferentControlsStaySeparate() {
-        val h = EditHistory()
+        val h = EditHistory<VideoEdits>()
         val a = VideoEdits()
         val b = a.copy(rotation = 1)
         val c = b.copy(rotation = 2)
@@ -70,7 +72,7 @@ class VideoEditModelTest {
 
     @Test
     fun newChangeClearsRedo() {
-        val h = EditHistory()
+        val h = EditHistory<VideoEdits>()
         val a = VideoEdits()
         val b = a.copy(volume = 0f)
         h.record(a, now = 1_000)

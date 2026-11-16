@@ -1,65 +1,103 @@
 package com.opensync.foldersync
 
+import android.app.Activity
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Matrix
-import android.graphics.Paint
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Compare
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.EmojiEmotions
+import androidx.compose.material.icons.filled.PhotoFilter
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.ColorMatrix as ComposeColorMatrix
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
+import com.opensync.foldersync.videoedit.DECO_COLORS
+import com.opensync.foldersync.videoedit.DecorateMode
+import com.opensync.foldersync.videoedit.DecorationLayer
+import com.opensync.foldersync.videoedit.DecoratePanel
+import com.opensync.foldersync.videoedit.StickerDecoration
+import com.opensync.foldersync.videoedit.TextDecoration
+import com.opensync.foldersync.videoedit.TextDecorationDialog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
+import kotlin.math.abs
+import kotlin.math.max
+import androidx.compose.ui.graphics.ColorMatrix as ComposeColorMatrix
 
 /**
- * A self-contained photo editor: live (GPU) light/colour adjustments, filter presets, and rotate/flip,
- * with a full-resolution save. Reachable internally (edit_path extra) and as a system image editor
- * (ACTION_EDIT). The panels and colour model are shared with [com.opensync.foldersync.videoedit.VideoEditorActivity] (MediaEditorCommon.kt).
+ * A photo editor modelled on the Samsung Gallery one, sharing its tools with
+ * [com.opensync.foldersync.videoedit.VideoEditorActivity] (MediaEditorCommon.kt, Decorations.kt):
+ * - Transform: crop (free or a fixed ratio), straighten (zooms to fill), rotate, flip
+ * - Filters with intensity; Tone (brightness, exposure, contrast, highlights, shadows, saturation,
+ *   warmth, tint, sharpness, vignette, and Auto)
+ * - Decorate: text, emoji stickers and freehand drawing
+ * - Undo/redo, hold to compare with the original, save over the original or as a copy at a
+ *   chosen size, keeping the format and EXIF details (date taken, location, camera).
+ * Reachable internally (edit_path extra) and as a system image editor (ACTION_EDIT).
  */
 class PhotoEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,68 +108,145 @@ class PhotoEditorActivity : ComponentActivity() {
         if (uri == null) { finish(); return }
         setContent {
             OpenSyncTheme {
-                PhotoEditorScreen(uri = uri, onClose = { finish() })
+                PhotoEditorScreen(uri = uri, onSaved = { setResult(Activity.RESULT_OK) }, onClose = { finish() })
             }
         }
     }
 }
 
-private data class Edits(
-    val color: ColorEdits = ColorEdits(),
-    val rotation: Int = 0, // number of 90° clockwise steps
-    val flipH: Boolean = false,
-    val flipV: Boolean = false,
-    val straighten: Float = 0f, // fine rotation in degrees (-45..45)
-    val crop: NormRect = NormRect()
-) {
-    val modified: Boolean
-        get() = color.modified || rotation != 0 || flipH || flipV || straighten != 0f || !crop.isFull
+private enum class PhotoTool(val label: String, val icon: ImageVector) {
+    TRANSFORM("Transform", Icons.Filled.Crop),
+    FILTERS("Filters", Icons.Filled.PhotoFilter),
+    TONE("Tone", Icons.Filled.Tune),
+    DECORATE("Decorate", Icons.Filled.EmojiEmotions)
 }
 
-private enum class Tool(val label: String) { ADJUST("Light & colour"), FILTERS("Filters"), CROP("Crop") }
+/** The preview works on a copy this big (longer side); the save starts again from the full image. */
+private const val PREVIEW_MAX_DIM = 1600
+
+/** What the preview image depends on (colour is a live GPU filter on top, decorations a layer). */
+private data class PreviewKey(
+    val rotation: Int,
+    val flipH: Boolean,
+    val flipV: Boolean,
+    val straighten: Float,
+    val crop: NormRect?, // null while cropping: the whole frame is shown under the crop box
+    val tone: ToneEdits
+)
 
 @Composable
-private fun PhotoEditorScreen(uri: Uri, onClose: () -> Unit) {
+private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val base by produceState<Bitmap?>(initialValue = null, uri) {
-        value = withContext(Dispatchers.IO) { runCatching { decodeUpright(context, uri, 2048) }.getOrNull() }
+    val loaded by produceState<Result<Pair<Bitmap, PhotoSource>>?>(initialValue = null, uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { decodeUpright(context, uri, maxDim = PREVIEW_MAX_DIM) to readPhotoSource(context, uri) }
+        }
     }
+    val base = loaded?.getOrNull()?.first
+    val source = loaded?.getOrNull()?.second
     val thumb by produceState<Bitmap?>(initialValue = null, base) {
         value = base?.let { withContext(Dispatchers.Default) { Bitmap.createScaledBitmap(it, 140, (140f * it.height / it.width).toInt().coerceAtLeast(1), true) } }
     }
 
-    var edits by remember { mutableStateOf(Edits()) }
-    var tool by remember { mutableStateOf(Tool.ADJUST) }
+    // Edits + undo history. Every change goes through update() so it can be undone.
+    var edits by remember { mutableStateOf(PhotoEdits()) }
+    val history = remember { EditHistory<PhotoEdits>() }
+    var historyVersion by remember { mutableIntStateOf(0) }
+    fun update(new: PhotoEdits, key: Any? = null) {
+        if (new == edits) return
+        history.record(edits, key)
+        edits = new
+        historyVersion++
+    }
+
+    var tool by remember { mutableStateOf(PhotoTool.TRANSFORM) }
     var aspect by remember { mutableStateOf<Float?>(null) }
+    var toneIndex by remember { mutableIntStateOf(0) }
+    var decorateMode by remember { mutableStateOf(DecorateMode.TEXT) }
+    var selectedDecoration by remember { mutableStateOf<Long?>(null) }
+    var drawColor by remember { mutableIntStateOf(DECO_COLORS[2]) }
+    var drawWidth by remember { mutableStateOf(0.012f) }
+    var textDialog by remember { mutableStateOf<TextDecoration?>(null) }
+    var showTextDialog by remember { mutableStateOf(false) }
+    var comparing by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var showSave by remember { mutableStateOf(false) }
+    var showDiscard by remember { mutableStateOf(false) }
+    var saveSize by remember { mutableStateOf(PHOTO_SIZES.first()) }
+    val cropping = tool == PhotoTool.TRANSFORM
 
-    // Preview: rotate/flip/straighten the (small) preview bitmap; colour is a live GPU filter.
-    val transformed = remember(base, edits.rotation, edits.flipH, edits.flipV, edits.straighten) {
-        base?.let { applyTransform(it, edits.rotation, edits.flipH, edits.flipV, edits.straighten) }
+    // The preview pipeline runs off the main thread. Conflated rather than restarted, so a slider
+    // drag keeps showing new frames instead of cancelling every one before it finishes.
+    var lookInput by remember { mutableStateOf<Bitmap?>(null) } // transformed + cropped, before tone
+    var preview by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(base) {
+        val b = base ?: return@LaunchedEffect
+        var transformKey: PhotoEdits? = null
+        var transformed: Bitmap = b
+        var cropKey: Any? = Unit
+        var cropped: Bitmap = b
+        snapshotFlow {
+            PreviewKey(
+                edits.rotation, edits.flipH, edits.flipV, edits.straighten,
+                if (tool == PhotoTool.TRANSFORM) null else edits.crop,
+                edits.tone
+            )
+        }.conflate().collect { k ->
+            val shown = withContext(Dispatchers.Default) {
+                val geometry = PhotoEdits(rotation = k.rotation, flipH = k.flipH, flipV = k.flipV, straighten = k.straighten)
+                if (geometry != transformKey) {
+                    transformed = applyTransform(b, geometry)
+                    transformKey = geometry
+                    cropKey = Unit
+                }
+                if (k.crop != cropKey) {
+                    cropped = k.crop?.let { cropBitmap(transformed, it) } ?: transformed
+                    cropKey = k.crop
+                }
+                renderLook(cropped, k.tone, null)
+            }
+            lookInput = cropped
+            preview = shown
+        }
     }
-    val cropped = remember(transformed, edits.crop) {
-        transformed?.let { cropBitmap(it, edits.crop) }
-    }
+
     val colorFilter = remember(edits.color) {
         ColorFilter.colorMatrix(ComposeColorMatrix(colorMatrixFor(edits.color).array))
     }
 
-    fun save(overwrite: Boolean) {
+    // Keep the screen on while saving, and don't let Back abandon a save or drop unsaved edits.
+    val view = LocalView.current
+    LaunchedEffect(saving) { view.keepScreenOn = saving }
+    BackHandler(enabled = saving) {}
+    BackHandler(enabled = !saving && edits.modified) { showDiscard = true }
+    fun close() {
+        if (edits.modified) showDiscard = true else onClose()
+    }
+
+    fun save(overwrite: Boolean, size: PhotoSize) {
         showSave = false
         saving = true
+        val e = edits
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { renderAndSave(context, uri, edits, overwrite) }
+            val result = try {
+                Result.success(saveEditedPhoto(context, uri, e, size, overwrite))
+            } catch (c: CancellationException) {
+                throw c // the editor was closed; nothing to report
+            } catch (t: Throwable) {
+                Result.failure(t)
             }
             saving = false
-            result.onSuccess {
-                Toast.makeText(context, if (overwrite) "Saved" else "Saved a copy", Toast.LENGTH_SHORT).show()
+            result.onSuccess { saved ->
+                val where = saved.file?.parentFile?.name
+                val msg = if (overwrite) "Saved" else "Saved a copy" + (where?.let { " to $it" } ?: "")
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                onSaved()
                 onClose()
             }.onFailure {
-                Toast.makeText(context, "Couldn't save: ${it.message}", Toast.LENGTH_LONG).show()
+                val why = if (it is OutOfMemoryError) "not enough memory" else it.message ?: it.javaClass.simpleName
+                Toast.makeText(context, "Couldn't save: $why", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -139,16 +254,42 @@ private fun PhotoEditorScreen(uri: Uri, onClose: () -> Unit) {
     // background before systemBarsPadding: dark fills behind the bars, content is inset off them.
     Column(Modifier.fillMaxSize().background(EDITOR_BG).systemBarsPadding()) {
         // Top bar
+        val canUndo = historyVersion >= 0 && history.canUndo
+        val canRedo = historyVersion >= 0 && history.canRedo
+        val canCompare = edits.modified && base != null && !saving
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
+            IconButton(onClick = { close() }, enabled = !saving) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = { edits = Edits() }, enabled = edits.modified) {
-                Icon(Icons.Filled.Refresh, "Reset", tint = if (edits.modified) Color.White else Color.Gray)
+            IconButton(onClick = { history.undo(edits)?.let { edits = it; historyVersion++ } }, enabled = canUndo && !saving) {
+                Icon(Icons.AutoMirrored.Filled.Undo, "Undo", tint = if (canUndo) Color.White else Color.Gray)
             }
-            TextButton(onClick = { showSave = true }, enabled = edits.modified && !saving) {
+            IconButton(onClick = { history.redo(edits)?.let { edits = it; historyVersion++ } }, enabled = canRedo && !saving) {
+                Icon(Icons.AutoMirrored.Filled.Redo, "Redo", tint = if (canRedo) Color.White else Color.Gray)
+            }
+            // Hold to see the original.
+            Box(
+                Modifier.size(48.dp).clip(RoundedCornerShape(24.dp)).then(
+                    if (!canCompare) Modifier else Modifier.pointerInput(Unit) {
+                        detectTapGestures(onPress = {
+                            comparing = true
+                            try { awaitRelease() } finally { comparing = false }
+                        })
+                    }
+                ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Filled.Compare, "Hold to compare with the original", tint = if (canCompare) Color.White else Color.Gray)
+            }
+            IconButton(
+                onClick = { update(PhotoEdits()); aspect = null; selectedDecoration = null },
+                enabled = edits.modified && !saving
+            ) {
+                Icon(Icons.Filled.Refresh, "Revert all edits", tint = if (edits.modified) Color.White else Color.Gray)
+            }
+            TextButton(onClick = { showSave = true }, enabled = edits.modified && !saving && source != null) {
                 Icon(Icons.Filled.Save, null, tint = if (edits.modified) Color.White else Color.Gray)
                 Spacer(Modifier.width(6.dp))
                 Text("Save", color = if (edits.modified) Color.White else Color.Gray)
@@ -156,162 +297,225 @@ private fun PhotoEditorScreen(uri: Uri, onClose: () -> Unit) {
         }
 
         // Preview
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            val cropping = tool == Tool.CROP
-            val d = if (cropping) transformed else cropped
-            if (d == null) {
-                CircularProgressIndicator(color = Color.White)
-            } else {
-                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-                    Image(
-                        bitmap = d.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        colorFilter = colorFilter,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (cropping) {
-                        CropOverlay(
-                            imageAspect = d.width.toFloat() / d.height.toFloat(),
-                            crop = edits.crop,
-                            aspect = aspect,
-                            onCrop = { edits = edits.copy(crop = it) }
+        Box(Modifier.weight(1f).fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+            val shown = if (comparing) base else preview
+            when {
+                loaded == null -> CircularProgressIndicator(color = Color.White)
+                base == null -> Text("Couldn't open this photo", color = Color(0xFFBBBBBB))
+                shown == null -> CircularProgressIndicator(color = Color.White)
+                else -> {
+                    val image = remember(shown) { shown.asImageBitmap() }
+                    val frameAspect = shown.width.toFloat() / shown.height.toFloat()
+                    Box(Modifier.aspectRatio(frameAspect.coerceIn(0.05f, 20f))) {
+                        Image(
+                            bitmap = image,
+                            contentDescription = null,
+                            contentScale = ContentScale.FillBounds,
+                            colorFilter = if (comparing) null else colorFilter,
+                            modifier = Modifier.fillMaxSize()
                         )
+                        if (!comparing) {
+                            if (cropping) {
+                                CropOverlay(
+                                    imageAspect = frameAspect,
+                                    crop = edits.crop,
+                                    aspect = aspect,
+                                    onCrop = { update(edits.copy(crop = it), "crop") }
+                                )
+                            } else {
+                                // Decorations belong to the finished (cropped) picture, so they're hidden while cropping.
+                                DecorationLayer(
+                                    decorations = edits.decorations,
+                                    strokes = edits.strokes,
+                                    mode = if (tool == PhotoTool.DECORATE) decorateMode else null,
+                                    selectedId = selectedDecoration,
+                                    drawColor = drawColor,
+                                    drawWidth = drawWidth,
+                                    onSelect = { selectedDecoration = it },
+                                    onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it }), "deco:${d.id}") },
+                                    // One key per stroke: a stroke is one undo step, the next is another.
+                                    onStrokes = { update(edits.copy(strokes = it), "stroke:${it.size}") }
+                                )
+                            }
+                        }
                     }
                 }
             }
+            if (comparing) {
+                Text(
+                    "Original",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.TopCenter).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0x99000000)).padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
             if (saving) {
-                Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color.White)
+                // Swallows touches so nothing can be edited mid-save.
+                Box(
+                    Modifier.fillMaxSize().background(Color(0x99000000))
+                        .pointerInput(Unit) { awaitEachGesture { awaitFirstDown().consume() } },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color.White)
+                        Spacer(Modifier.height(12.dp))
+                        Text("Saving…", color = Color.White, fontSize = 13.sp)
+                    }
                 }
             }
         }
 
         // Tool panel
-        Column(Modifier.fillMaxWidth().background(EDITOR_PANEL_BG).padding(bottom = 6.dp)) {
+        Column(Modifier.fillMaxWidth().background(EDITOR_PANEL_BG).padding(bottom = 4.dp)) {
             when (tool) {
-                Tool.ADJUST -> AdjustPanel(edits.color) { edits = edits.copy(color = it) }
-                Tool.FILTERS -> FilterPanel(
-                    thumb = thumb,
-                    selected = edits.color.filter,
-                    strength = edits.color.filterStrength,
-                    onSelect = { edits = edits.copy(color = edits.color.copy(filter = it, filterStrength = 1f)) },
-                    onStrength = { edits = edits.copy(color = edits.color.copy(filterStrength = it)) }
-                )
-                Tool.CROP -> CropPanel(
+                PhotoTool.TRANSFORM -> CropPanel(
                     aspect = aspect,
                     straighten = edits.straighten,
                     onAspect = { r ->
                         aspect = r
-                        val ia = transformed?.let { it.width.toFloat() / it.height.toFloat() } ?: 1f
-                        edits = edits.copy(crop = centeredCrop(ia, r))
+                        val ia = base?.let {
+                            if (edits.rotation % 2 == 1) it.height.toFloat() / it.width else it.width.toFloat() / it.height
+                        } ?: 1f
+                        update(edits.copy(crop = centeredCrop(ia, r)))
                     },
-                    onStraighten = { edits = edits.copy(straighten = it) },
-                    onRotateLeft = { edits = edits.copy(rotation = (edits.rotation + 3) % 4) },
-                    onRotateRight = { edits = edits.copy(rotation = (edits.rotation + 1) % 4) },
-                    onFlipH = { edits = edits.copy(flipH = !edits.flipH) },
-                    onFlipV = { edits = edits.copy(flipV = !edits.flipV) }
+                    onStraighten = { update(edits.copy(straighten = it), "straighten") },
+                    onRotateLeft = { update(edits.rotated(clockwise = false)); aspect = turnedAspect(aspect) },
+                    onRotateRight = { update(edits.rotated(clockwise = true)); aspect = turnedAspect(aspect) },
+                    onFlipH = { update(edits.mirrored()) },
+                    onFlipV = { update(edits.flipped()) }
+                )
+                PhotoTool.FILTERS -> FilterPanel(
+                    thumb = thumb,
+                    selected = edits.color.filter,
+                    strength = edits.color.filterStrength,
+                    onSelect = { update(edits.copy(color = edits.color.copy(filter = it, filterStrength = 1f))) },
+                    onStrength = { update(edits.copy(color = edits.color.copy(filterStrength = it)), "filterStrength") }
+                )
+                PhotoTool.TONE -> TonePanel(
+                    color = edits.color,
+                    tone = edits.tone,
+                    selected = toneIndex,
+                    onSelect = { toneIndex = it },
+                    onChange = { c, t -> update(edits.copy(color = c, tone = t), "tone:$toneIndex") },
+                    onAuto = {
+                        (lookInput ?: base)?.let { img ->
+                            val (c, t) = autoTone(img, edits.color, edits.tone)
+                            update(edits.copy(color = c, tone = t))
+                        }
+                    }
+                )
+                PhotoTool.DECORATE -> DecoratePanel(
+                    mode = decorateMode,
+                    selected = edits.decorations.firstOrNull { it.id == selectedDecoration },
+                    drawColor = drawColor,
+                    drawWidth = drawWidth,
+                    hasStrokes = edits.strokes.isNotEmpty(),
+                    onMode = { decorateMode = it; selectedDecoration = null },
+                    onAddText = { textDialog = null; showTextDialog = true },
+                    onEditText = { textDialog = it; showTextDialog = true },
+                    onAddSticker = { e ->
+                        val s = StickerDecoration(id = System.nanoTime(), emoji = e)
+                        update(edits.copy(decorations = edits.decorations + s))
+                        selectedDecoration = s.id
+                    },
+                    onUpdate = { d -> update(edits.copy(decorations = edits.decorations.map { if (it.id == d.id) d else it }), "deco:${d.id}") },
+                    onDelete = { d ->
+                        update(edits.copy(decorations = edits.decorations.filterNot { it.id == d.id }))
+                        selectedDecoration = null
+                    },
+                    onDrawColor = { drawColor = it },
+                    onDrawWidth = { drawWidth = it },
+                    onUndoStroke = { update(edits.copy(strokes = edits.strokes.dropLast(1))) },
+                    onClearStrokes = { update(edits.copy(strokes = emptyList())) }
                 )
             }
-            ToolTabs(Tool.entries, tool, { it.label }) { tool = it }
+            EditorToolBar(PhotoTool.entries, tool, { it.label }, { it.icon }) {
+                tool = it
+                selectedDecoration = null
+            }
         }
     }
 
-    if (showSave) {
+    if (showTextDialog) {
+        val editing = textDialog
+        TextDecorationDialog(
+            initial = editing,
+            onDismiss = { showTextDialog = false },
+            onConfirm = { text, color, style ->
+                showTextDialog = false
+                if (editing == null) {
+                    val t = TextDecoration(id = System.nanoTime(), text = text, color = color, style = style)
+                    update(edits.copy(decorations = edits.decorations + t))
+                    selectedDecoration = t.id
+                } else {
+                    val t = editing.copy(text = text, color = color, style = style)
+                    update(edits.copy(decorations = edits.decorations.map { if (it.id == t.id) t else it }))
+                }
+            }
+        )
+    }
+
+    if (showSave && source != null) {
+        val edited = editedPhotoSize(source.saveWidth, source.saveHeight, edits)
+        val options = PHOTO_SIZES.filter { it.longSide == null || it.longSide < max(edited.first, edited.second) }
+        val chosen = if (saveSize in options) saveSize else PHOTO_SIZES.first()
         AlertDialog(
             onDismissRequest = { showSave = false },
             title = { Text("Save edited photo") },
-            text = { Text("Overwrite the original, or keep it and save a copy?") },
-            confirmButton = { TextButton(onClick = { save(false) }) { Text("Save copy") } },
-            dismissButton = { TextButton(onClick = { save(true) }) { Text("Overwrite") } }
+            text = {
+                Column {
+                    Text(
+                        when {
+                            source.canOverwrite -> "Overwrite the original, or keep it and save a copy?"
+                            source.inAppStorage -> "This photo was downloaded to edit it, so the edit is saved as a new photo in Pictures/OpenSync."
+                            else -> "This kind of image can't be written back, so the edit is saved as a new JPEG; the original is kept."
+                        }
+                    )
+                    if (options.size > 1) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Size", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            options.forEach { s ->
+                                val sel = s == chosen
+                                val (w, h) = photoOutputSize(edited.first, edited.second, s)
+                                Column(
+                                    Modifier.clip(RoundedCornerShape(8.dp))
+                                        .background(if (sel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                                        .clickable { saveSize = s }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(s.label, fontSize = 13.sp)
+                                    Text("$w×$h", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { save(false, chosen) }) { Text("Save copy") } },
+            dismissButton = {
+                if (source.canOverwrite) TextButton(onClick = { save(true, chosen) }) { Text("Overwrite") }
+                else TextButton(onClick = { showSave = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showDiscard) {
+        AlertDialog(
+            onDismissRequest = { showDiscard = false },
+            title = { Text("Discard your edits?") },
+            text = { Text("The photo stays as it was.") },
+            confirmButton = { TextButton(onClick = { showDiscard = false; onClose() }) { Text("Discard") } },
+            dismissButton = { TextButton(onClick = { showDiscard = false }) { Text("Keep editing") } }
         )
     }
 }
 
-// ---- Image processing ----
-
-private fun applyTransform(src: Bitmap, rotation: Int, flipH: Boolean, flipV: Boolean, straighten: Float): Bitmap {
-    if (rotation == 0 && !flipH && !flipV && straighten == 0f) return src
-    val m = Matrix()
-    m.postScale(if (flipH) -1f else 1f, if (flipV) -1f else 1f)
-    m.postRotate(rotation * 90f + straighten)
-    return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
-}
-
-private fun cropBitmap(src: Bitmap, c: NormRect): Bitmap {
-    if (c.isFull) return src
-    val x = (c.l * src.width).toInt().coerceIn(0, src.width - 1)
-    val y = (c.t * src.height).toInt().coerceIn(0, src.height - 1)
-    val w = (c.width * src.width).toInt().coerceIn(1, src.width - x)
-    val h = (c.height * src.height).toInt().coerceIn(1, src.height - y)
-    return Bitmap.createBitmap(src, x, y, w, h)
-}
-
-/** Decode a downsampled bitmap and correct for EXIF orientation so the preview is upright. */
-private fun decodeUpright(context: android.content.Context, uri: Uri, maxDim: Int): Bitmap {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-    var sample = 1
-    val bigger = maxOf(bounds.outWidth, bounds.outHeight)
-    while (bigger / sample > maxDim) sample *= 2
-    val opts = BitmapFactory.Options().apply {
-        inSampleSize = sample
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
-    val bmp = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-        ?: throw IllegalStateException("Could not read image")
-    val orientation = runCatching {
-        context.contentResolver.openInputStream(uri)?.use { android.media.ExifInterface(it).getAttributeInt(
-            android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL
-        ) } ?: android.media.ExifInterface.ORIENTATION_NORMAL
-    }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
-    return applyExif(bmp, orientation)
-}
-
-private fun applyExif(bmp: Bitmap, orientation: Int): Bitmap {
-    val m = Matrix()
-    when (orientation) {
-        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> m.postRotate(90f)
-        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> m.postRotate(180f)
-        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> m.postRotate(270f)
-        android.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.postScale(-1f, 1f)
-        android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.postScale(1f, -1f)
-        else -> return bmp
-    }
-    return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-}
-
-/** Load the full-resolution image, bake in every edit, and write it out. */
-private fun renderAndSave(context: android.content.Context, uri: Uri, edits: Edits, overwrite: Boolean) {
-    var full = decodeUpright(context, uri, 4096)
-    full = applyTransform(full, edits.rotation, edits.flipH, edits.flipV, edits.straighten)
-    full = cropBitmap(full, edits.crop)
-    val out = Bitmap.createBitmap(full.width, full.height, Bitmap.Config.ARGB_8888)
-    Canvas(out).drawBitmap(
-        full, 0f, 0f,
-        Paint().apply {
-            isFilterBitmap = true
-            isAntiAlias = true
-            colorFilter = ColorMatrixColorFilter(colorMatrixFor(edits.color))
-        }
-    )
-
-    when {
-        overwrite && uri.scheme == "file" -> {
-            val f = File(uri.path!!)
-            FileOutputStream(f).use { out.compress(Bitmap.CompressFormat.JPEG, 95, it) }
-            scanFile(context, f)
-        }
-        overwrite -> // content:// original — overwrite in place, no rescan needed.
-            context.contentResolver.openOutputStream(uri, "wt")!!.use { out.compress(Bitmap.CompressFormat.JPEG, 95, it) }
-        else -> {
-            val srcFile = uri.takeIf { it.scheme == "file" }?.path?.let { File(it) }
-            val dir = srcFile?.parentFile
-                ?: File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "OpenSync").apply { mkdirs() }
-            val baseName = srcFile?.nameWithoutExtension ?: "photo"
-            val f = uniqueFile(dir, "${baseName}_edited", "jpg")
-            FileOutputStream(f).use { out.compress(Bitmap.CompressFormat.JPEG, 95, it) }
-            scanFile(context, f)
-        }
-    }
+/** The crop ratio after a quarter turn: 4:3 becomes 3:4 (picked from [ASPECTS] so its chip stays lit). */
+private fun turnedAspect(a: Float?): Float? {
+    if (a == null) return null
+    val turned = 1f / a
+    return ASPECTS.firstNotNullOfOrNull { o -> o.ratio?.takeIf { abs(it - turned) < 0.001f } } ?: turned
 }

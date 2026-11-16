@@ -25,7 +25,11 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
   its media as a grid; remote image thumbnails download progressively (size-capped).
 - Full-screen viewer with **swipe** between items and **pinch-to-zoom**; videos open in your
   player of choice.
-- Built-in **photo editor**: light & colour, filters with intensity, crop / straighten / rotate / flip.
+- Built-in **photo editor** (modelled on Samsung Gallery's): transform (crop free or at a fixed
+  ratio, straighten that zooms to fill, rotate, flip); filters with intensity; tone (the same ten
+  adjustments as the video editor, plus Auto); decorate with text, emoji stickers and drawing;
+  undo/redo; hold to compare with the original. Save over the original or as a copy, at full size
+  or smaller, keeping the format (JPEG/PNG/WebP) and the photo's date, location and camera details.
 - Built-in **video editor** (modelled on Samsung Gallery's): trim; transform (crop with aspect
   ratios, straighten, rotate, flip); filters with intensity; tone (brightness, exposure, contrast,
   highlights, shadows, saturation, warmth, tint, sharpness, vignette, one-tap Auto); decorate with

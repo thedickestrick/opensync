@@ -131,7 +131,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Photo editor (adjustments, filters, rotate/flip). Also a system "Edit" target. -->
+        <!-- Photo editor (transform, filters, tone, text/stickers/drawing). Also a system "Edit" target. -->
         <activity
             android:name=".PhotoEditorActivity"
             android:exported="true"

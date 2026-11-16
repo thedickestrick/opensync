@@ -106,7 +106,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.opensync.foldersync.CropPanel
 import com.opensync.foldersync.EDITOR_BG
 import com.opensync.foldersync.EDITOR_PANEL_BG
+import com.opensync.foldersync.EditHistory
+import com.opensync.foldersync.EditorToolBar
 import com.opensync.foldersync.FilterPanel
+import com.opensync.foldersync.TonePanel
+import com.opensync.foldersync.autoTone
 import com.opensync.foldersync.centeredCrop
 import com.opensync.foldersync.CropOverlay
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
@@ -159,21 +163,6 @@ private enum class VideoTool(val label: String, val icon: ImageVector) {
     AUDIO("Audio", Icons.Filled.MusicNote)
 }
 
-private data class ToneControl(val label: String, val get: (VideoEdits) -> Float, val set: (VideoEdits, Float) -> VideoEdits)
-
-private val TONE_CONTROLS = listOf(
-    ToneControl("Brightness", { it.color.brightness }) { e, v -> e.copy(color = e.color.copy(brightness = v)) },
-    ToneControl("Exposure", { it.tone.exposure }) { e, v -> e.copy(tone = e.tone.copy(exposure = v)) },
-    ToneControl("Contrast", { it.color.contrast }) { e, v -> e.copy(color = e.color.copy(contrast = v)) },
-    ToneControl("Highlights", { it.tone.highlights }) { e, v -> e.copy(tone = e.tone.copy(highlights = v)) },
-    ToneControl("Shadows", { it.tone.shadows }) { e, v -> e.copy(tone = e.tone.copy(shadows = v)) },
-    ToneControl("Saturation", { it.color.saturation }) { e, v -> e.copy(color = e.color.copy(saturation = v)) },
-    ToneControl("Warmth", { it.color.warmth }) { e, v -> e.copy(color = e.color.copy(warmth = v)) },
-    ToneControl("Tint", { it.color.tint }) { e, v -> e.copy(color = e.color.copy(tint = v)) },
-    ToneControl("Sharpness", { it.tone.sharpness }) { e, v -> e.copy(tone = e.tone.copy(sharpness = v)) },
-    ToneControl("Vignette", { it.tone.vignette }) { e, v -> e.copy(tone = e.tone.copy(vignette = v)) }
-)
-
 private const val MIN_TRIM_MS = 500L
 private const val SCRUB_SEEK_INTERVAL_MS = 80L
 
@@ -194,7 +183,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
 
     // Edits + undo history. Every change goes through update() so it can be undone.
     var edits by remember { mutableStateOf(VideoEdits()) }
-    val history = remember { EditHistory() }
+    val history = remember { EditHistory<VideoEdits>() }
     var historyVersion by remember { mutableIntStateOf(0) }
     fun update(new: VideoEdits, key: Any? = null) {
         if (new == edits) return
@@ -582,14 +571,15 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     onStrength = { update(edits.copy(color = edits.color.copy(filterStrength = it)), "filterStrength") }
                 )
                 VideoTool.TONE -> TonePanel(
-                    edits = edits,
+                    color = edits.color,
+                    tone = edits.tone,
                     selected = toneIndex,
                     onSelect = { toneIndex = it },
-                    onChange = { update(it, "tone:$toneIndex") },
+                    onChange = { c, t -> update(edits.copy(color = c, tone = t), "tone:$toneIndex") },
                     onAuto = {
                         thumb?.let { f ->
-                            val (c, t) = autoTone(f)
-                            update(edits.copy(color = edits.color.copy(contrast = c.contrast, saturation = c.saturation), tone = edits.tone.copy(exposure = t.exposure, highlights = t.highlights, shadows = t.shadows)))
+                            val (c, t) = autoTone(f, edits.color, edits.tone)
+                            update(edits.copy(color = c, tone = t))
                         }
                     }
                 )
@@ -628,7 +618,7 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     onRemoveMusic = { update(edits.copy(music = null)) }
                 )
             }
-            ToolBar(tool) {
+            EditorToolBar(VideoTool.entries, tool, { it.label }, { it.icon }) {
                 tool = it
                 selectedDecoration = null
             }
@@ -702,26 +692,6 @@ private fun PlayheadLabel(position: MutableLongState, trimStart: Long, trimEnd: 
     val pos = ((position.longValue - trimStart) / speed).toLong()
     val len = ((trimEnd - trimStart) / speed).toLong()
     Text("${formatTime(pos)} / ${formatTime(len)}", color = Color(0xFFDDDDDD), fontSize = 13.sp)
-}
-
-@Composable
-private fun ToolBar(selected: VideoTool, onSelect: (VideoTool) -> Unit) {
-    LazyRow(
-        Modifier.fillMaxWidth().padding(top = 4.dp),
-        contentPadding = PaddingValues(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        items(VideoTool.entries) { t ->
-            val tint = if (t == selected) MaterialTheme.colorScheme.primary else Color(0xFFBBBBBB)
-            Column(
-                Modifier.clip(RoundedCornerShape(8.dp)).clickable { onSelect(t) }.padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(t.icon, null, tint = tint, modifier = Modifier.size(22.dp))
-                Text(t.label, color = tint, fontSize = 11.sp)
-            }
-        }
-    }
 }
 
 @Composable
@@ -839,60 +809,6 @@ private fun TrimTimeline(
                 drawLine(Color.White, Offset(xp, 0f), Offset(xp, h), 2.dp.toPx())
             }
         }
-    }
-}
-
-/** Samsung-style tone tools: pick an adjustment, then one slider for it. */
-@Composable
-private fun TonePanel(
-    edits: VideoEdits,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-    onChange: (VideoEdits) -> Unit,
-    onAuto: () -> Unit
-) {
-    val control = TONE_CONTROLS[selected]
-    val value = control.get(edits)
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(control.label, color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(84.dp))
-            Slider(value = value, onValueChange = { onChange(control.set(edits, it)) }, valueRange = -1f..1f, modifier = Modifier.weight(1f))
-            Text(
-                "${(value * 100).roundToInt()}",
-                color = Color(0xFF999999),
-                fontSize = 12.sp,
-                modifier = Modifier.width(36.dp).clickable { onChange(control.set(edits, 0f)) }
-            )
-        }
-        LazyRow(
-            Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            item {
-                ToneChip("Auto", null, selected = false, icon = Icons.Filled.AutoFixHigh, onClick = onAuto)
-            }
-            items(TONE_CONTROLS.size) { i ->
-                val c = TONE_CONTROLS[i]
-                ToneChip(c.label, (c.get(edits) * 100).roundToInt(), selected = i == selected) { onSelect(i) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ToneChip(label: String, value: Int?, selected: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
-    Column(
-        Modifier.clip(RoundedCornerShape(10.dp))
-            .background(if (selected) Color(0x333B82F6) else Color(0xFF26262C))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        val tint = if (selected) MaterialTheme.colorScheme.primary else Color(0xFFCCCCCC)
-        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
-        else Text(if (value == null || value == 0) "0" else "%+d".format(value), color = if (value != 0) tint else Color(0xFF888888), fontSize = 11.sp)
-        Text(label, color = tint, fontSize = 12.sp)
     }
 }
 

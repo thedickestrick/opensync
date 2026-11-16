@@ -227,10 +227,13 @@ internal fun DecorationLayer(
                 while (true) {
                     val ev = awaitPointerEvent()
                     val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!ch.pressed) break
-                    points += (ch.position.x / w).coerceIn(0f, 1f) to (ch.position.y / h).coerceIn(0f, 1f)
-                    setStrokes(base + DrawStroke(points.toList(), color, width))
+                    // The lift counts too: a busy frame can deliver the last move together with it.
+                    if (ch.position != ch.previousPosition || ch.pressed) {
+                        points += (ch.position.x / w).coerceIn(0f, 1f) to (ch.position.y / h).coerceIn(0f, 1f)
+                        setStrokes(base + DrawStroke(points.toList(), color, width))
+                    }
                     ch.consume()
+                    if (!ch.pressed) break
                 }
                 return@awaitEachGesture
             }
@@ -314,7 +317,7 @@ internal fun DecoratePanel(
                             Text("Add text", color = Color.White)
                         }
                     }
-                    Hint("Tap text on the video to change it; drag to move, pinch to resize.")
+                    Hint("Tap text to change it; drag to move, pinch to resize.")
                 } else {
                     ColorRow(t.color) { onUpdate(t.copy(color = it)) }
                     Row(

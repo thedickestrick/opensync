@@ -12,6 +12,7 @@ import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
 import com.opensync.foldersync.ColorEdits
+import com.opensync.foldersync.ToneEdits
 import com.opensync.foldersync.colorMatrixFor
 import android.graphics.ColorMatrix as GfxColorMatrix
 

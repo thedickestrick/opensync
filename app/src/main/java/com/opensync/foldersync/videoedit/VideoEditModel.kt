@@ -1,24 +1,12 @@
 package com.opensync.foldersync.videoedit
 
-import android.graphics.Bitmap
 import com.opensync.foldersync.ColorEdits
 import com.opensync.foldersync.NormRect
+import com.opensync.foldersync.ToneEdits
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import kotlin.math.sqrt
-
-/** Tone controls the video editor adds on top of the shared [ColorEdits] (each -1..1). */
-internal data class ToneEdits(
-    val exposure: Float = 0f,
-    val highlights: Float = 0f,
-    val shadows: Float = 0f,
-    val sharpness: Float = 0f, // negative softens
-    val vignette: Float = 0f // positive darkens the corners, negative brightens them
-) {
-    val modified get() = exposure != 0f || highlights != 0f || shadows != 0f || sharpness != 0f || vignette != 0f
-}
 
 /** Text, emoji stickers and drawn strokes, all placed relative to the finished frame (0..1). */
 internal sealed interface Decoration {
@@ -137,86 +125,6 @@ internal fun outputSize(edited: Pair<Int, Int>, res: ResolutionOption): Pair<Int
     val k = res.shortSide?.let { minOf(1f, it.toFloat() / short) } ?: 1f
     fun even(v: Float) = ((v / 2f).roundToInt() * 2).coerceAtLeast(2)
     return even(w * k) to even(h * k)
-}
-
-/**
- * Keeps edit history for undo/redo. Successive changes with the same key close together in time
- * (one slider drag, one stroke) collapse into a single step; changes without a key never do.
- */
-internal class EditHistory(private val limit: Int = 60) {
-    private val past = ArrayDeque<VideoEdits>()
-    private val future = ArrayDeque<VideoEdits>()
-    private var lastChangeAt = 0L
-    private var lastKey: Any? = null
-
-    val canUndo get() = past.isNotEmpty()
-    val canRedo get() = future.isNotEmpty()
-
-    /** Call with the state *before* a change; [key] identifies the control or gesture making it. */
-    fun record(before: VideoEdits, key: Any? = null, now: Long = System.currentTimeMillis()) {
-        val continues = key != null && key == lastKey && now - lastChangeAt <= COALESCE_MS && past.isNotEmpty()
-        if (!continues) {
-            past.addLast(before)
-            if (past.size > limit) past.removeFirst()
-        }
-        future.clear()
-        lastChangeAt = now
-        lastKey = key
-    }
-
-    fun undo(current: VideoEdits): VideoEdits? {
-        val prev = past.removeLastOrNull() ?: return null
-        future.addLast(current)
-        lastKey = null
-        return prev
-    }
-
-    fun redo(current: VideoEdits): VideoEdits? {
-        val next = future.removeLastOrNull() ?: return null
-        past.addLast(current)
-        lastKey = null
-        return next
-    }
-
-    private companion object {
-        const val COALESCE_MS = 700L
-    }
-}
-
-/**
- * One-tap "Auto" adjustment from a sample frame: pulls the average brightness toward the middle,
- * stretches flat contrast a little and adds a touch of colour.
- */
-internal fun autoTone(frame: Bitmap): Pair<ColorEdits, ToneEdits> {
-    val w = 64
-    val h = (64f * frame.height / frame.width).roundToInt().coerceAtLeast(1)
-    val small = Bitmap.createScaledBitmap(frame, w, h, true)
-    val px = IntArray(w * h)
-    small.getPixels(px, 0, w, 0, 0, w, h)
-    if (small !== frame) small.recycle()
-    var sum = 0.0
-    var sumSq = 0.0
-    var satSum = 0.0
-    for (p in px) {
-        val r = (p ushr 16 and 0xFF) / 255.0
-        val g = (p ushr 8 and 0xFF) / 255.0
-        val b = (p and 0xFF) / 255.0
-        val l = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        sum += l
-        sumSq += l * l
-        satSum += maxOf(r, g, b) - minOf(r, g, b)
-    }
-    val n = px.size.toDouble()
-    val mean = sum / n
-    val std = sqrt((sumSq / n - mean * mean).coerceAtLeast(0.0))
-    val sat = satSum / n
-    val exposure = ((0.48 - mean) * 1.6).toFloat().coerceIn(-0.6f, 0.6f)
-    val contrast = ((0.22 - std) * 1.5).toFloat().coerceIn(-0.2f, 0.35f)
-    val saturation = ((0.3 - sat) * 0.8).toFloat().coerceIn(-0.1f, 0.3f)
-    val shadows = if (mean < 0.4) 0.25f else 0.1f
-    val highlights = if (mean > 0.55) -0.25f else -0.1f
-    return ColorEdits(contrast = contrast, saturation = saturation) to
-        ToneEdits(exposure = exposure, shadows = shadows, highlights = highlights)
 }
 
 internal fun formatTime(ms: Long): String {

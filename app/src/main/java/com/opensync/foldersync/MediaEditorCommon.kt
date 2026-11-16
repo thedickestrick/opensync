@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Rotate90DegreesCcw
 import androidx.compose.material.icons.filled.Rotate90DegreesCw
@@ -45,6 +46,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import androidx.compose.ui.graphics.ColorMatrix as ComposeColorMatrix
 import android.graphics.ColorMatrix as GfxColorMatrix
 
@@ -82,6 +87,98 @@ internal data class ColorEdits(
     val modified: Boolean
         get() = brightness != 0f || contrast != 0f || saturation != 0f || warmth != 0f || tint != 0f ||
             (filter != 0 && filterStrength > 0f)
+}
+
+/** Tone controls on top of [ColorEdits] (each -1..1). */
+internal data class ToneEdits(
+    val exposure: Float = 0f,
+    val highlights: Float = 0f,
+    val shadows: Float = 0f,
+    val sharpness: Float = 0f, // negative softens
+    val vignette: Float = 0f // positive darkens the corners, negative brightens them
+) {
+    val modified get() = exposure != 0f || highlights != 0f || shadows != 0f || sharpness != 0f || vignette != 0f
+}
+
+/**
+ * Keeps edit history for undo/redo. Successive changes with the same key close together in time
+ * (one slider drag, one stroke) collapse into a single step; changes without a key never do.
+ */
+internal class EditHistory<T>(private val limit: Int = 60) {
+    private val past = ArrayDeque<T>()
+    private val future = ArrayDeque<T>()
+    private var lastChangeAt = 0L
+    private var lastKey: Any? = null
+
+    val canUndo get() = past.isNotEmpty()
+    val canRedo get() = future.isNotEmpty()
+
+    /** Call with the state *before* a change; [key] identifies the control or gesture making it. */
+    fun record(before: T, key: Any? = null, now: Long = System.currentTimeMillis()) {
+        val continues = key != null && key == lastKey && now - lastChangeAt <= COALESCE_MS && past.isNotEmpty()
+        if (!continues) {
+            past.addLast(before)
+            if (past.size > limit) past.removeFirst()
+        }
+        future.clear()
+        lastChangeAt = now
+        lastKey = key
+    }
+
+    fun undo(current: T): T? {
+        val prev = past.removeLastOrNull() ?: return null
+        future.addLast(current)
+        lastKey = null
+        return prev
+    }
+
+    fun redo(current: T): T? {
+        val next = future.removeLastOrNull() ?: return null
+        past.addLast(current)
+        lastKey = null
+        return next
+    }
+
+    private companion object {
+        const val COALESCE_MS = 700L
+    }
+}
+
+/**
+ * One-tap "Auto" adjustment from a sample image: pulls the average brightness toward the middle,
+ * stretches flat contrast a little and adds a touch of colour. Returns [color] and [tone] with the
+ * values Auto sets replaced and everything else kept.
+ */
+internal fun autoTone(frame: Bitmap, color: ColorEdits, tone: ToneEdits): Pair<ColorEdits, ToneEdits> {
+    val w = 64
+    val h = (64f * frame.height / frame.width).roundToInt().coerceAtLeast(1)
+    val small = Bitmap.createScaledBitmap(frame, w, h, true)
+    val px = IntArray(w * h)
+    small.getPixels(px, 0, w, 0, 0, w, h)
+    if (small !== frame) small.recycle()
+    var sum = 0.0
+    var sumSq = 0.0
+    var satSum = 0.0
+    for (p in px) {
+        val r = (p ushr 16 and 0xFF) / 255.0
+        val g = (p ushr 8 and 0xFF) / 255.0
+        val b = (p and 0xFF) / 255.0
+        val l = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        sum += l
+        sumSq += l * l
+        satSum += maxOf(r, g, b) - minOf(r, g, b)
+    }
+    val n = px.size.toDouble()
+    val mean = sum / n
+    val std = sqrt((sumSq / n - mean * mean).coerceAtLeast(0.0))
+    val sat = satSum / n
+    val exposure = ((0.48 - mean) * 1.6).toFloat().coerceIn(-0.6f, 0.6f)
+    val contrast = ((0.22 - std) * 1.5).toFloat().coerceIn(-0.2f, 0.35f)
+    val saturation = ((0.3 - sat) * 0.8).toFloat().coerceIn(-0.1f, 0.3f)
+    val shadows = if (mean < 0.4) 0.25f else 0.1f
+    val highlights = if (mean > 0.55) -0.25f else -0.1f
+    return color.copy(contrast = contrast, saturation = saturation) to
+        tone.copy(exposure = exposure, shadows = shadows, highlights = highlights)
 }
 
 internal data class AspectOption(val label: String, val ratio: Float?)
@@ -239,30 +336,81 @@ private fun scaledFilter(f: GfxColorMatrix, strength: Float): GfxColorMatrix {
     return GfxColorMatrix(FloatArray(20) { i -> identity[i] + k * (a[i] - identity[i]) })
 }
 
+private class ToneControl(
+    val label: String,
+    val get: (ColorEdits, ToneEdits) -> Float,
+    val set: (ColorEdits, ToneEdits, Float) -> Pair<ColorEdits, ToneEdits>
+)
+
+private val TONE_CONTROLS = listOf(
+    ToneControl("Brightness", { c, _ -> c.brightness }) { c, t, v -> c.copy(brightness = v) to t },
+    ToneControl("Exposure", { _, t -> t.exposure }) { c, t, v -> c to t.copy(exposure = v) },
+    ToneControl("Contrast", { c, _ -> c.contrast }) { c, t, v -> c.copy(contrast = v) to t },
+    ToneControl("Highlights", { _, t -> t.highlights }) { c, t, v -> c to t.copy(highlights = v) },
+    ToneControl("Shadows", { _, t -> t.shadows }) { c, t, v -> c to t.copy(shadows = v) },
+    ToneControl("Saturation", { c, _ -> c.saturation }) { c, t, v -> c.copy(saturation = v) to t },
+    ToneControl("Warmth", { c, _ -> c.warmth }) { c, t, v -> c.copy(warmth = v) to t },
+    ToneControl("Tint", { c, _ -> c.tint }) { c, t, v -> c.copy(tint = v) to t },
+    ToneControl("Sharpness", { _, t -> t.sharpness }) { c, t, v -> c to t.copy(sharpness = v) },
+    ToneControl("Vignette", { _, t -> t.vignette }) { c, t, v -> c to t.copy(vignette = v) }
+)
+
+/** Samsung-style tone tools: pick an adjustment, then one slider for it. Tap the number to reset it. */
 @Composable
-internal fun AdjustPanel(edits: ColorEdits, onChange: (ColorEdits) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        AdjustSlider("Brightness", edits.brightness) { onChange(edits.copy(brightness = it)) }
-        AdjustSlider("Contrast", edits.contrast) { onChange(edits.copy(contrast = it)) }
-        AdjustSlider("Saturation", edits.saturation) { onChange(edits.copy(saturation = it)) }
-        AdjustSlider("Warmth", edits.warmth) { onChange(edits.copy(warmth = it)) }
-        AdjustSlider("Tint", edits.tint) { onChange(edits.copy(tint = it)) }
+internal fun TonePanel(
+    color: ColorEdits,
+    tone: ToneEdits,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    onChange: (ColorEdits, ToneEdits) -> Unit,
+    onAuto: () -> Unit
+) {
+    val control = TONE_CONTROLS[selected.coerceIn(0, TONE_CONTROLS.lastIndex)]
+    val value = control.get(color, tone)
+    fun set(v: Float) {
+        val (c, t) = control.set(color, tone, v)
+        onChange(c, t)
+    }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(control.label, color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(84.dp))
+            Slider(value = value, onValueChange = { set(it) }, valueRange = -1f..1f, modifier = Modifier.weight(1f))
+            Text(
+                "${(value * 100).roundToInt()}",
+                color = Color(0xFF999999),
+                fontSize = 12.sp,
+                modifier = Modifier.width(36.dp).clickable { set(0f) }
+            )
+        }
+        LazyRow(
+            Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            item {
+                ToneChip("Auto", null, selected = false, icon = Icons.Filled.AutoFixHigh, onClick = onAuto)
+            }
+            items(TONE_CONTROLS.size) { i ->
+                val c = TONE_CONTROLS[i]
+                ToneChip(c.label, (c.get(color, tone) * 100).roundToInt(), selected = i == selected) { onSelect(i) }
+            }
+        }
     }
 }
 
 @Composable
-private fun AdjustSlider(label: String, value: Float, onValue: (Float) -> Unit) {
-    Column(Modifier.padding(vertical = 2.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(90.dp))
-            Slider(
-                value = value,
-                onValueChange = onValue,
-                valueRange = -1f..1f,
-                modifier = Modifier.weight(1f)
-            )
-            Text("${(value * 100).toInt()}", color = Color(0xFF999999), fontSize = 12.sp, modifier = Modifier.width(36.dp))
-        }
+private fun ToneChip(label: String, value: Int?, selected: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
+    Column(
+        Modifier.clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Color(0x333B82F6) else Color(0xFF26262C))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        val tint = if (selected) MaterialTheme.colorScheme.primary else Color(0xFFCCCCCC)
+        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
+        else Text(if (value == null || value == 0) "0" else "%+d".format(value), color = if (value != 0) tint else Color(0xFF888888), fontSize = 11.sp)
+        Text(label, color = tint, fontSize = 12.sp)
     }
 }
 
@@ -384,9 +532,14 @@ internal fun CropPanel(
     }
 }
 
+/**
+ * The crop box over the image: drag inside to move it, drag an edge or corner to resize it. With
+ * an [aspect] ratio picked, resizing keeps that ratio.
+ */
 @Composable
 internal fun CropOverlay(imageAspect: Float, crop: NormRect, aspect: Float?, onCrop: (NormRect) -> Unit) {
     val cropState = rememberUpdatedState(crop)
+    val aspectState = rememberUpdatedState(aspect)
 
     Canvas(
         Modifier.fillMaxSize().pointerInput(imageAspect) {
@@ -398,35 +551,27 @@ internal fun CropOverlay(imageAspect: Float, crop: NormRect, aspect: Float?, onC
                 val cTop = img.top + c0.t * img.height
                 val cRight = img.left + c0.r * img.width
                 val cBottom = img.top + c0.b * img.height
-                val hr = 56f
                 val p = down.position
-                val nearL = abs(p.x - cLeft) < hr
-                val nearR = abs(p.x - cRight) < hr
-                val nearT = abs(p.y - cTop) < hr
-                val nearB = abs(p.y - cBottom) < hr
+                // Edges are grabbable a finger's width outside the box, but at most a third of the
+                // way in, so even a small box keeps a middle to move it by.
+                val reach = 24.dp.toPx()
+                if (p.x < cLeft - reach || p.x > cRight + reach || p.y < cTop - reach || p.y > cBottom + reach) return@awaitEachGesture
+                val inX = min(reach, (cRight - cLeft) / 3f)
+                val inY = min(reach, (cBottom - cTop) / 3f)
+                val nearL = p.x < cLeft + inX
+                val nearR = p.x > cRight - inX
+                val nearT = p.y < cTop + inY
+                val nearB = p.y > cBottom - inY
                 val onHandle = nearL || nearR || nearT || nearB
-                val inside = p.x in cLeft..cRight && p.y in cTop..cBottom
-                if (!onHandle && !inside) return@awaitEachGesture
                 down.consume()
-                var cur = c0
+                val ratio = aspectState.value?.let { it / imageAspect } // as a width/height of the 0..1 rect
                 while (true) {
                     val ev = awaitPointerEvent()
                     val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                    val dx = (ch.position.x - ch.previousPosition.x) / img.width
-                    val dy = (ch.position.y - ch.previousPosition.y) / img.height
-                    cur = if (!onHandle) {
-                        val nl = (cur.l + dx).coerceIn(0f, 1f - cur.width)
-                        val nt = (cur.t + dy).coerceIn(0f, 1f - cur.height)
-                        NormRect(nl, nt, nl + cur.width, nt + cur.height)
-                    } else {
-                        var l = cur.l; var t = cur.t; var r = cur.r; var b = cur.b
-                        if (nearL) l = (l + dx).coerceIn(0f, r - 0.05f)
-                        if (nearR) r = (r + dx).coerceIn(l + 0.05f, 1f)
-                        if (nearT) t = (t + dy).coerceIn(0f, b - 0.05f)
-                        if (nearB) b = (b + dy).coerceIn(t + 0.05f, 1f)
-                        NormRect(l, t, r, b)
-                    }
-                    onCrop(cur)
+                    // Measured from where the finger went down, so pushing past an edge and back works.
+                    val dx = (ch.position.x - p.x) / img.width
+                    val dy = (ch.position.y - p.y) / img.height
+                    onCrop(if (onHandle) resizeCrop(c0, dx, dy, nearL, nearR, nearT, nearB, ratio) else moveCrop(c0, dx, dy))
                     ch.consume()
                     if (ev.changes.none { it.pressed }) break
                 }
@@ -451,7 +596,87 @@ internal fun CropOverlay(imageAspect: Float, crop: NormRect, aspect: Float?, onC
             drawLine(Color(0x66FFFFFF), Offset(gx, top), Offset(gx, bottom), 1f)
             drawLine(Color(0x66FFFFFF), Offset(left, gy), Offset(right, gy), 1f)
         }
+        // Corner handles.
+        val arm = min(18.dp.toPx(), min(right - left, bottom - top) / 2f)
+        val sw = 3.dp.toPx()
+        val o = sw / 2f
+        for ((x, sx) in listOf(left - o to 1f, right + o to -1f)) {
+            for ((y, sy) in listOf(top - o to 1f, bottom + o to -1f)) {
+                drawLine(Color.White, Offset(x, y), Offset(x + sx * arm, y), sw)
+                drawLine(Color.White, Offset(x, y), Offset(x, y + sy * arm), sw)
+            }
+        }
     }
+}
+
+internal fun moveCrop(c: NormRect, dx: Float, dy: Float): NormRect {
+    val l = (c.l + dx).coerceIn(0f, 1f - c.width)
+    val t = (c.t + dy).coerceIn(0f, 1f - c.height)
+    return NormRect(l, t, l + c.width, t + c.height)
+}
+
+/**
+ * Drags the chosen edges of [c] by [dx]/[dy] (fractions of the image). With a [ratio] (the box's
+ * width/height in 0..1 units) the box keeps its shape: a corner drag pins the opposite corner, a
+ * side drag grows the other dimension evenly about the middle.
+ */
+internal fun resizeCrop(
+    c: NormRect,
+    dx: Float,
+    dy: Float,
+    left: Boolean,
+    right: Boolean,
+    top: Boolean,
+    bottom: Boolean,
+    ratio: Float?,
+    minSize: Float = 0.05f
+): NormRect {
+    var l = c.l; var t = c.t; var r = c.r; var b = c.b
+    if (left) l = (c.l + dx).coerceIn(0f, c.r - minSize)
+    if (right) r = (c.r + dx).coerceIn(c.l + minSize, 1f)
+    if (top) t = (c.t + dy).coerceIn(0f, c.b - minSize)
+    if (bottom) b = (c.b + dy).coerceIn(c.t + minSize, 1f)
+    if (ratio == null || ratio <= 0f) return NormRect(l, t, r, b)
+
+    val horiz = left || right
+    val vert = top || bottom
+    var w = r - l
+    var h = b - t
+    if (horiz && vert) {
+        // Follow whichever way the finger moved further (compared in width units).
+        if (abs(w - c.width) >= abs(h - c.height) * ratio) h = w / ratio else w = h * ratio
+        val maxW = if (left) c.r else 1f - c.l
+        val maxH = if (top) c.b else 1f - c.t
+        if (w > maxW) { w = maxW; h = w / ratio }
+        if (h > maxH) { h = maxH; w = h * ratio }
+        l = if (left) c.r - w else c.l
+        t = if (top) c.b - h else c.t
+        r = l + w
+        b = t + h
+    } else if (horiz) {
+        val cy = (c.t + c.b) / 2f
+        h = w / ratio
+        val maxH = 2f * min(cy, 1f - cy)
+        if (h > maxH) {
+            h = maxH
+            w = h * ratio
+            if (left) l = r - w else r = l + w
+        }
+        t = cy - h / 2f
+        b = cy + h / 2f
+    } else if (vert) {
+        val cx = (c.l + c.r) / 2f
+        w = h * ratio
+        val maxW = 2f * min(cx, 1f - cx)
+        if (w > maxW) {
+            w = maxW
+            h = w / ratio
+            if (top) t = b - h else b = t + h
+        }
+        l = cx - w / 2f
+        r = cx + w / 2f
+    }
+    return NormRect(l.coerceIn(0f, 1f), t.coerceIn(0f, 1f), r.coerceIn(0f, 1f), b.coerceIn(0f, 1f))
 }
 
 private fun fittedRect(boxW: Float, boxH: Float, imageAspect: Float): Rect {
@@ -483,19 +708,29 @@ private fun TransformButton(icon: androidx.compose.ui.graphics.vector.ImageVecto
     }
 }
 
-/** The editor's bottom tab row (Light & colour / Filters / Crop / …). */
+/** The editor's bottom row of tools (Transform / Filters / Tone / …), each an icon over a label. */
 @Composable
-internal fun <T> ToolTabs(tools: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
-    Row(
+internal fun <T> EditorToolBar(
+    tools: List<T>,
+    selected: T,
+    label: (T) -> String,
+    icon: (T) -> ImageVector,
+    onSelect: (T) -> Unit
+) {
+    LazyRow(
         Modifier.fillMaxWidth().padding(top = 4.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly
+        contentPadding = PaddingValues(horizontal = 8.dp),
+        horizontalArrangement = if (tools.size <= 5) Arrangement.SpaceEvenly else Arrangement.spacedBy(2.dp)
     ) {
-        tools.forEach { t ->
-            Text(
-                label(t),
-                color = if (selected == t) MaterialTheme.colorScheme.primary else Color(0xFFBBBBBB),
-                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { onSelect(t) }.padding(10.dp)
-            )
+        items(tools) { t ->
+            val tint = if (t == selected) MaterialTheme.colorScheme.primary else Color(0xFFBBBBBB)
+            Column(
+                Modifier.clip(RoundedCornerShape(8.dp)).clickable { onSelect(t) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(icon(t), null, tint = tint, modifier = Modifier.size(22.dp))
+                Text(label(t), color = tint, fontSize = 11.sp)
+            }
         }
     }
 }
