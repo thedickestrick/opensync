@@ -61,7 +61,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -112,10 +111,12 @@ import com.opensync.foldersync.EDITOR_PANEL_BG
 import com.opensync.foldersync.EditHistory
 import com.opensync.foldersync.EditorToolBar
 import com.opensync.foldersync.FilterPanel
+import com.opensync.foldersync.SaveProgress
 import com.opensync.foldersync.SavedEdit
 import com.opensync.foldersync.UploadStatus
 import com.opensync.foldersync.TonePanel
 import com.opensync.foldersync.UploadFailedDialog
+import com.opensync.foldersync.UploadProgressBar
 import com.opensync.foldersync.autoTone
 import com.opensync.foldersync.centeredCrop
 import com.opensync.foldersync.cloudOrigin
@@ -539,16 +540,8 @@ private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
                         .pointerInput(Unit) { awaitEachGesture { awaitFirstDown().consume() } },
                     contentAlignment = Alignment.Center
                 ) {
-                    SaveProgress(
-                        title = if (uploading) "Uploading to ${cloud?.accountName}…" else "Saving…",
-                        // Unknown while the upload is still connecting to the account.
-                        fraction = if (uploading) upload?.fraction else progress / 100f,
-                        detail = when {
-                            !uploading -> "$progress%"
-                            upload == null -> "Connecting…"
-                            else -> upload!!.let { "${it.percent}%  ·  ${it.sizes}" }
-                        }
-                    )
+                    if (uploading) UploadProgressBar(cloud, upload)
+                    else SaveProgress("Saving…", progress / 100f, "$progress%")
                 }
             }
         }
@@ -937,28 +930,5 @@ private fun VolumeRow(label: String, value: Float, onValue: (Float) -> Unit) {
         Text(label, color = Color(0xFFDDDDDD), fontSize = 13.sp, modifier = Modifier.width(90.dp))
         Slider(value = value, onValueChange = onValue, valueRange = 0f..1f, modifier = Modifier.weight(1f))
         Text("${(value * 100).roundToInt()}%", color = Color(0xFF999999), fontSize = 12.sp, modifier = Modifier.width(40.dp))
-    }
-}
-
-/** The bar shown over the preview while saving: [fraction] null means it can't tell yet. */
-@Composable
-private fun SaveProgress(title: String, fraction: Float?, detail: String) {
-    Column(Modifier.width(260.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(title, color = Color.White, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(12.dp))
-        val barModifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
-        if (fraction == null) {
-            LinearProgressIndicator(barModifier, color = Color.White, trackColor = Color(0x40FFFFFF))
-        } else {
-            LinearProgressIndicator(
-                progress = { fraction },
-                modifier = barModifier,
-                color = Color.White,
-                trackColor = Color(0x40FFFFFF),
-                drawStopIndicator = {}
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(detail, color = Color(0xFFCCCCCC), fontSize = 13.sp)
     }
 }

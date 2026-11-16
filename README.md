@@ -37,8 +37,8 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
   undo/redo; capture a frame as a photo. The preview plays with every edit applied; save as MP4
   (a copy or over the original, at Original/1080p/720p/480p) or as an animated GIF.
 - Edits of photos and videos on an **account** (cloud drive, NAS, server) are uploaded back to it —
-  over the original or as a copy beside it, along with GIFs and captured frames. Video uploads show
-  a progress bar with how much has been sent. If the upload fails, the edit is kept on the phone in
+  over the original or as a copy beside it, along with GIFs and captured frames. Photo and video
+  uploads show a progress bar with how much has been sent. If the upload fails, the edit is kept on the phone in
   Pictures/ or Movies/OpenSync instead.
 - Switch data source (Device / Internal storage / each account) from the title bar.
 

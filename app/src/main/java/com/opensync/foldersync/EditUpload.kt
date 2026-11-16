@@ -4,10 +4,24 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Environment
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.opensync.foldersync.provider.ProviderFactory
 import com.opensync.foldersync.ui.formatBytes
 import com.opensync.foldersync.util.PathUtil
@@ -89,6 +103,39 @@ internal fun UploadFailedDialog(cloud: CloudOrigin?, saved: SavedEdit, onDismiss
         confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } }
     )
 }
+
+/** The bar shown over an editor's preview while saving: [fraction] null means it can't tell yet. */
+@Composable
+internal fun SaveProgress(title: String, fraction: Float?, detail: String? = null) {
+    Column(Modifier.width(260.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(title, color = Color.White, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(12.dp))
+        val barModifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+        if (fraction == null) {
+            LinearProgressIndicator(barModifier, color = Color.White, trackColor = Color(0x40FFFFFF))
+        } else {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = barModifier,
+                color = Color.White,
+                trackColor = Color(0x40FFFFFF),
+                drawStopIndicator = {}
+            )
+        }
+        if (detail != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(detail, color = Color(0xFFCCCCCC), fontSize = 13.sp)
+        }
+    }
+}
+
+/** [SaveProgress] while an edit uploads to [cloud]; [status] is null until the upload has connected. */
+@Composable
+internal fun UploadProgressBar(cloud: CloudOrigin?, status: UploadStatus?) = SaveProgress(
+    title = "Uploading to ${cloud?.accountName ?: "the account"}…",
+    fraction = status?.fraction,
+    detail = status?.let { "${it.percent}%  ·  ${it.sizes}" } ?: "Connecting…"
+)
 
 /** "[base].[ext]", or "[base] (1).[ext]", "[base] (2).[ext]"… — the first not already in [taken]. */
 internal fun uniqueName(taken: Collection<String>, base: String, ext: String): String {

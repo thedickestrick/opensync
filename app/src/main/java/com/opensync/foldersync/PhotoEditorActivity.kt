@@ -175,7 +175,8 @@ private fun PhotoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
     var showTextDialog by remember { mutableStateOf(false) }
     var comparing by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
-    var savingLabel by remember { mutableStateOf("Saving…") }
+    var uploading by remember { mutableStateOf(false) }
+    var upload by remember { mutableStateOf<UploadStatus?>(null) } // null until the upload connects
     var uploadFailure by remember { mutableStateOf<SavedEdit?>(null) }
     var showSave by remember { mutableStateOf(false) }
     var showDiscard by remember { mutableStateOf(false) }
@@ -233,13 +234,16 @@ private fun PhotoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
     fun save(overwrite: Boolean, size: PhotoSize) {
         showSave = false
         saving = true
-        savingLabel = "Saving…"
+        uploading = false
+        upload = null
         val e = edits
         scope.launch {
             val result = try {
-                Result.success(saveEditedPhoto(context, uri, e, size, overwrite, cloud) {
-                    savingLabel = "Uploading to ${cloud?.accountName}…"
-                })
+                Result.success(saveEditedPhoto(
+                    context, uri, e, size, overwrite, cloud,
+                    onUploading = { uploading = true },
+                    onUploadProgress = { upload = it }
+                ))
             } catch (c: CancellationException) {
                 throw c // the editor was closed; nothing to report
             } catch (t: Throwable) {
@@ -367,11 +371,8 @@ private fun PhotoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit
                         .pointerInput(Unit) { awaitEachGesture { awaitFirstDown().consume() } },
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color.White)
-                        Spacer(Modifier.height(12.dp))
-                        Text(savingLabel, color = Color.White, fontSize = 13.sp)
-                    }
+                    // Making the photo has no steps to count, so its bar just moves.
+                    if (uploading) UploadProgressBar(cloud, upload) else SaveProgress("Saving…", fraction = null)
                 }
             }
         }

@@ -332,7 +332,8 @@ private suspend fun renderFull(context: Context, uri: Uri, e: PhotoEdits, size: 
  * temporary file first, so a failure never leaves the original half-written. The copy keeps the
  * original's format when we can write it (else JPEG), and JPEGs keep the original's EXIF details —
  * date taken, location, camera — so the edit sorts next to the original. A photo downloaded from
- * one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when that starts.
+ * one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when that starts
+ * and [onUploadProgress] how far it has got.
  */
 internal suspend fun saveEditedPhoto(
     context: Context,
@@ -341,7 +342,8 @@ internal suspend fun saveEditedPhoto(
     size: PhotoSize,
     overwrite: Boolean,
     cloud: CloudOrigin?,
-    onUploading: () -> Unit = {}
+    onUploading: () -> Unit = {},
+    onUploadProgress: ((UploadStatus) -> Unit)? = null
 ): SavedEdit = withContext(Dispatchers.IO) {
     val source = readPhotoSource(context, uri, cloud)
     check(!overwrite || source.canOverwrite) { "This photo can only be saved as a copy" }
@@ -365,7 +367,10 @@ internal suspend fun saveEditedPhoto(
             ?.takeIf { it.isNotBlank() } ?: "photo"
         when {
             cloud != null ->
-                deliverToCloud(context, cloud, tmp, overwrite, "${baseName}_edited", format.ext, Environment.DIRECTORY_PICTURES, onUploading)
+                deliverToCloud(
+                    context, cloud, tmp, overwrite, "${baseName}_edited", format.ext, Environment.DIRECTORY_PICTURES,
+                    onUploading, onUploadProgress
+                )
             overwrite && srcFile != null -> {
                 tmp.inputStream().use { input -> FileOutputStream(srcFile).use { input.copyTo(it) } }
                 scanFile(context, srcFile)
