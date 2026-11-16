@@ -36,6 +36,10 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import com.google.common.collect.ImmutableList
+import com.opensync.foldersync.CloudOrigin
+import com.opensync.foldersync.SavedEdit
+import com.opensync.foldersync.deliverToCloud
+import com.opensync.foldersync.isInAppStorage
 import com.opensync.foldersync.scanFile
 import com.opensync.foldersync.uniqueFile
 import kotlinx.coroutines.Dispatchers
@@ -131,12 +135,15 @@ internal fun readFrames(context: Context, uri: Uri, durationMs: Long): List<Bitm
     }
 }
 
-internal fun canOverwrite(context: Context, uri: Uri): Boolean =
-    if (uri.scheme == "file") {
+/** An MP4 we can write back to: in place, or (for a download from an account) by uploading over it. */
+internal fun canOverwrite(context: Context, uri: Uri, cloud: CloudOrigin?): Boolean {
+    val mp4 = if (uri.scheme == "file") {
         (uri.path?.substringAfterLast('.', "")?.lowercase() ?: "") in MP4_EXTS
     } else {
         (runCatching { context.contentResolver.getType(uri) }.getOrNull()?.lowercase() ?: "") in MP4_MIMES
     }
+    return mp4 && (cloud != null || !isInAppStorage(context, uri))
+}
 
 // ---- Effects ----
 
@@ -296,15 +303,21 @@ private suspend fun runTransformer(context: Context, composition: Composition, o
 private fun tempFile(context: Context, ext: String) =
     File(File(context.cacheDir, "video_edit").apply { mkdirs() }, "export_${System.nanoTime()}.$ext")
 
-/** The folder a copy goes into: next to the original when it's a plain file, else [publicDir]/OpenSync. */
-private fun copyDir(uri: Uri, publicDir: String): File =
-    uri.takeIf { it.scheme == "file" }?.path?.let { File(it).parentFile }
+/**
+ * The folder a copy goes into: next to the original when it's a plain file of the user's, else
+ * [publicDir]/OpenSync (a download into OpenSync's own storage would hide the copy from the user).
+ */
+private fun copyDir(context: Context, uri: Uri, publicDir: String): File =
+    uri.takeIf { it.scheme == "file" && !isInAppStorage(context, it) }?.path?.let { File(it).parentFile }?.takeIf { it.canWrite() }
         ?: File(Environment.getExternalStoragePublicDirectory(publicDir), "OpenSync").apply { mkdirs() }
 
 private fun baseName(uri: Uri, fallback: String) =
-    uri.takeIf { it.scheme == "file" }?.path?.let { File(it).nameWithoutExtension } ?: fallback
+    uri.takeIf { it.scheme == "file" }?.path?.let { File(it).nameWithoutExtension }?.takeIf { it.isNotBlank() } ?: fallback
 
-/** Exports the edited video and puts it over the original or beside it as a copy. */
+/**
+ * Exports the edited video and puts it over the original or beside it as a copy. A video downloaded
+ * from one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when.
+ */
 internal suspend fun saveEditedVideo(
     context: Context,
     uri: Uri,
@@ -312,33 +325,49 @@ internal suspend fun saveEditedVideo(
     meta: VideoMeta,
     res: ResolutionOption,
     overwrite: Boolean,
-    onProgress: (Int) -> Unit
-): File? {
+    cloud: CloudOrigin?,
+    onProgress: (Int) -> Unit,
+    onUploading: () -> Unit
+): SavedEdit {
     val tmp = tempFile(context, "mp4")
     try {
         runTransformer(context, buildComposition(context, uri, edits, meta, res, gif = false), tmp, onProgress)
+        val base = "${baseName(uri, "video")}_edited"
+        if (cloud != null) return deliverToCloud(context, cloud, tmp, overwrite, base, "mp4", Environment.DIRECTORY_MOVIES, onUploading)
         return withContext(Dispatchers.IO) {
             when {
                 overwrite && uri.scheme == "file" -> {
                     val f = File(uri.path!!)
                     tmp.inputStream().use { input -> FileOutputStream(f).use { input.copyTo(it) } }
                     scanFile(context, f)
-                    f
+                    SavedEdit(file = f, overwrote = true)
                 }
                 overwrite -> { // content:// original — overwrite in place, no rescan needed.
                     context.contentResolver.openOutputStream(uri, "wt")!!.use { o -> tmp.inputStream().use { it.copyTo(o) } }
-                    null
+                    SavedEdit(overwrote = true)
                 }
                 else -> {
-                    val f = uniqueFile(copyDir(uri, Environment.DIRECTORY_MOVIES), "${baseName(uri, "video")}_edited", "mp4")
+                    val f = uniqueFile(copyDir(context, uri, Environment.DIRECTORY_MOVIES), base, "mp4")
                     tmp.inputStream().use { input -> FileOutputStream(f).use { input.copyTo(it) } }
                     scanFile(context, f)
-                    f
+                    SavedEdit(file = f)
                 }
             }
         }
     } finally {
         tmp.delete()
+    }
+}
+
+/** Puts a finished extra (a GIF, a captured frame) next to the video: locally, or on its account. */
+private suspend fun keepBeside(context: Context, uri: Uri, cloud: CloudOrigin?, made: File, suffix: String, ext: String): SavedEdit {
+    val base = "${baseName(uri, "video")}_$suffix"
+    if (cloud != null) return deliverToCloud(context, cloud, made, overwrite = false, base, ext, Environment.DIRECTORY_PICTURES)
+    return withContext(Dispatchers.IO) {
+        val f = uniqueFile(copyDir(context, uri, Environment.DIRECTORY_PICTURES), base, ext)
+        made.copyTo(f, overwrite = true)
+        scanFile(context, f)
+        SavedEdit(file = f)
     }
 }
 
@@ -351,14 +380,15 @@ internal suspend fun saveEditedGif(
     uri: Uri,
     edits: VideoEdits,
     meta: VideoMeta,
+    cloud: CloudOrigin?,
     onProgress: (Int) -> Unit
-): File {
+): SavedEdit {
     val tmp = tempFile(context, "mp4")
+    val out = tempFile(context, "gif")
     try {
         runTransformer(context, buildComposition(context, uri, edits, meta, RESOLUTIONS.first(), gif = true), tmp) { onProgress(it * 7 / 10) }
-        return withContext(Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             val r = MediaMetadataRetriever()
-            val out = uniqueFile(copyDir(uri, Environment.DIRECTORY_PICTURES), "${baseName(uri, "video")}_edited", "gif")
             try {
                 r.setDataSource(tmp.absolutePath)
                 val durMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
@@ -383,24 +413,24 @@ internal suspend fun saveEditedGif(
                     }
                     checkNotNull(encoder) { "Couldn't read the rendered frames" }.finish()
                 }
-            } catch (t: Throwable) {
-                out.delete()
-                throw t
             } finally {
                 runCatching { r.release() }
             }
-            scanFile(context, out)
-            out
         }
+        return keepBeside(context, uri, cloud, out, "edited", "gif")
     } finally {
         tmp.delete()
+        out.delete()
     }
 }
 
 /** Saves a still (already rendered with the edits) as a JPEG next to the video. */
-internal suspend fun saveFrameCapture(context: Context, uri: Uri, frame: Bitmap): File = withContext(Dispatchers.IO) {
-    val f = uniqueFile(copyDir(uri, Environment.DIRECTORY_PICTURES), "${baseName(uri, "video")}_capture", "jpg")
-    FileOutputStream(f).use { frame.compress(Bitmap.CompressFormat.JPEG, 95, it) }
-    scanFile(context, f)
-    f
+internal suspend fun saveFrameCapture(context: Context, uri: Uri, cloud: CloudOrigin?, frame: Bitmap): SavedEdit {
+    val tmp = tempFile(context, "jpg")
+    try {
+        withContext(Dispatchers.IO) { FileOutputStream(tmp).use { frame.compress(Bitmap.CompressFormat.JPEG, 95, it) } }
+        return keepBeside(context, uri, cloud, tmp, "capture", "jpg")
+    } finally {
+        tmp.delete()
+    }
 }

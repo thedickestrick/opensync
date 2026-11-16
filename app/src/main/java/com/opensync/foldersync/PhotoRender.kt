@@ -40,14 +40,14 @@ internal data class PhotoSource(
     val name: String?, // file or display name
     val format: PhotoFormat?, // the format it's written back in; null = saved as a JPEG copy
     val inAppStorage: Boolean, // a private download (e.g. from the cloud): overwriting it would change nothing
-
+    val cloud: CloudOrigin?, // the account file it was downloaded from; saving goes back there
     val saveWidth: Int, // upright size the save will work at
     val saveHeight: Int
 ) {
-    val canOverwrite get() = format != null && !inAppStorage
+    val canOverwrite get() = format != null && (cloud != null || !inAppStorage)
 }
 
-internal fun readPhotoSource(context: Context, uri: Uri): PhotoSource {
+internal fun readPhotoSource(context: Context, uri: Uri, cloud: CloudOrigin?): PhotoSource {
     val name = if (uri.scheme == "file") uri.path?.let { File(it).name } else runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
@@ -60,10 +60,11 @@ internal fun readPhotoSource(context: Context, uri: Uri): PhotoSource {
     var w = (bounds.outWidth + sample - 1) / sample
     var h = (bounds.outHeight + sample - 1) / sample
     if (readOrientation(context, uri).let { it in SIDEWAYS_ORIENTATIONS }) { val t = w; w = h; h = t }
-    return PhotoSource(name, writableFormat(name, mime ?: bounds.outMimeType), isInAppStorage(context, uri), w, h)
+    return PhotoSource(name, writableFormat(name, mime ?: bounds.outMimeType), isInAppStorage(context, uri), cloud, w, h)
 }
 
-private fun isInAppStorage(context: Context, uri: Uri): Boolean {
+/** A file in OpenSync's own storage (e.g. a download to edit): saving there would be lost to the user. */
+internal fun isInAppStorage(context: Context, uri: Uri): Boolean {
     val path = uri.takeIf { it.scheme == "file" }?.path?.let { runCatching { File(it).canonicalPath }.getOrNull() } ?: return false
     return listOfNotNull(context.cacheDir, context.filesDir, context.externalCacheDir, context.getExternalFilesDir(null))
         .any { dir -> runCatching { dir.canonicalPath }.getOrNull()?.let { path.startsWith(it + File.separator) } == true }
@@ -326,23 +327,23 @@ private suspend fun renderFull(context: Context, uri: Uri, e: PhotoEdits, size: 
     }
 }
 
-/** Where a saved photo ended up: a file we wrote, or the original (content) [uri] overwritten in place. */
-internal data class SavedPhoto(val file: File?, val uri: Uri)
-
 /**
  * Renders the edited photo and writes it over the original or beside it as a copy. It's encoded to a
  * temporary file first, so a failure never leaves the original half-written. The copy keeps the
  * original's format when we can write it (else JPEG), and JPEGs keep the original's EXIF details —
- * date taken, location, camera — so the edit sorts next to the original.
+ * date taken, location, camera — so the edit sorts next to the original. A photo downloaded from
+ * one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when that starts.
  */
 internal suspend fun saveEditedPhoto(
     context: Context,
     uri: Uri,
     edits: PhotoEdits,
     size: PhotoSize,
-    overwrite: Boolean
-): SavedPhoto = withContext(Dispatchers.IO) {
-    val source = readPhotoSource(context, uri)
+    overwrite: Boolean,
+    cloud: CloudOrigin?,
+    onUploading: () -> Unit = {}
+): SavedEdit = withContext(Dispatchers.IO) {
+    val source = readPhotoSource(context, uri, cloud)
     check(!overwrite || source.canOverwrite) { "This photo can only be saved as a copy" }
     val format = source.format ?: PhotoFormat.JPEG
     val tmp = File(File(context.cacheDir, "photo_edit").apply { mkdirs() }, "save_${System.nanoTime()}.${format.ext}")
@@ -359,30 +360,31 @@ internal suspend fun saveEditedPhoto(
         if (format == PhotoFormat.JPEG) copyExif(context, uri, tmp, w, h)
         ensureActive()
 
+        val srcFile = uri.takeIf { it.scheme == "file" }?.path?.let { File(it) }
+        val baseName = (srcFile?.nameWithoutExtension ?: source.name?.substringBeforeLast('.'))
+            ?.takeIf { it.isNotBlank() } ?: "photo"
         when {
-            overwrite && uri.scheme == "file" -> {
-                val f = File(uri.path!!)
-                tmp.inputStream().use { input -> FileOutputStream(f).use { input.copyTo(it) } }
-                scanFile(context, f)
-                SavedPhoto(f, uri)
+            cloud != null ->
+                deliverToCloud(context, cloud, tmp, overwrite, "${baseName}_edited", format.ext, Environment.DIRECTORY_PICTURES, onUploading)
+            overwrite && srcFile != null -> {
+                tmp.inputStream().use { input -> FileOutputStream(srcFile).use { input.copyTo(it) } }
+                scanFile(context, srcFile)
+                SavedEdit(file = srcFile, overwrote = true)
             }
             overwrite -> { // content:// original — overwrite in place; its provider updates it.
                 val out = runCatching { context.contentResolver.openOutputStream(uri, "wt") }.getOrNull()
                     ?: context.contentResolver.openOutputStream(uri, "w")
                     ?: throw IllegalStateException("Couldn't write to the original")
                 out.use { o -> tmp.inputStream().use { it.copyTo(o) } }
-                SavedPhoto(null, uri)
+                SavedEdit(overwrote = true)
             }
             else -> {
-                val srcFile = uri.takeIf { it.scheme == "file" }?.path?.let { File(it) }
                 val dir = srcFile?.parentFile?.takeIf { !source.inAppStorage && it.canWrite() }
                     ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "OpenSync").apply { mkdirs() }
-                val baseName = (srcFile?.nameWithoutExtension ?: source.name?.substringBeforeLast('.'))
-                    ?.takeIf { it.isNotBlank() } ?: "photo"
                 val f = uniqueFile(dir, "${baseName}_edited", format.ext)
                 tmp.inputStream().use { input -> FileOutputStream(f).use { input.copyTo(it) } }
                 scanFile(context, f)
-                SavedPhoto(f, Uri.fromFile(f))
+                SavedEdit(file = f)
             }
         }
     } finally {

@@ -4,6 +4,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.opensync.foldersync.CloudOrigin
 import com.opensync.foldersync.Graph
 import com.opensync.foldersync.files.Clipboard
 import com.opensync.foldersync.files.SharedClipboard
@@ -489,6 +490,28 @@ class GalleryViewModel : ViewModel() {
     fun dismissError() = _state.update { it.copy(error = null) }
 
     suspend fun materialize(item: MediaItem): File = repo.materialize(item)
+
+    /**
+     * The account file behind [item] when [file] is our download of it, so the editor saves back to
+     * the account. Null for anything already on the phone (including a "local folder" account,
+     * whose files are handed over as they are).
+     */
+    internal fun cloudOriginFor(item: MediaItem, file: File): CloudOrigin? {
+        val s = _state.value
+        val loc = (s.source as? GallerySource.Provider)?.location as? ExplorerLocation.Remote ?: return null
+        val rf = item.remoteFile ?: return null
+        val cache = runCatching { Graph.appContext.cacheDir.canonicalPath + File.separator }.getOrNull() ?: return null
+        if (runCatching { file.canonicalPath.startsWith(cache) }.getOrDefault(false).not()) return null
+        val name = accounts.value.firstOrNull { it.id == loc.accountId }?.name ?: s.sourceLabel
+        return CloudOrigin(loc.accountId, name, rf.relPath)
+    }
+
+    /** After the editor saved something: show the new copy, or the changed original. */
+    fun refreshAfterEdit() {
+        val s = _state.value
+        if (s.source is GallerySource.Device && !s.inAlbum) return
+        refreshAfterOp(emptyList())
+    }
 
     private fun startRemoteThumbs(media: List<MediaItem>) {
         val source = _state.value.source

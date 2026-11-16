@@ -1,5 +1,6 @@
 package com.opensync.foldersync.videoedit
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
@@ -103,15 +104,21 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import com.opensync.foldersync.CloudOrigin
 import com.opensync.foldersync.CropPanel
 import com.opensync.foldersync.EDITOR_BG
 import com.opensync.foldersync.EDITOR_PANEL_BG
 import com.opensync.foldersync.EditHistory
 import com.opensync.foldersync.EditorToolBar
 import com.opensync.foldersync.FilterPanel
+import com.opensync.foldersync.SavedEdit
 import com.opensync.foldersync.TonePanel
+import com.opensync.foldersync.UploadFailedDialog
 import com.opensync.foldersync.autoTone
 import com.opensync.foldersync.centeredCrop
+import com.opensync.foldersync.cloudOrigin
+import com.opensync.foldersync.isInAppStorage
+import com.opensync.foldersync.openedByThisApp
 import com.opensync.foldersync.CropOverlay
 import com.opensync.foldersync.ui.theme.OpenSyncTheme
 import kotlinx.coroutines.CancellationException
@@ -136,18 +143,21 @@ import kotlin.math.roundToInt
  * - Undo/redo, capture the current frame as a photo, save as MP4 (copy or overwrite, choice of
  *   resolution) or as an animated GIF.
  * The preview plays through Media3's effect pipeline with the same effects the save uses.
- * Reachable internally (edit_path extra) and as a system video editor (ACTION_EDIT).
+ * Reachable internally (edit_path extra) and as a system video editor (ACTION_EDIT). A video the
+ * gallery downloaded from one of the user's accounts is saved back to that account (EditUpload.kt).
  */
 class VideoEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Paths and accounts are only taken from OpenSync itself, never from another app's request.
         val uri = intent?.data
-            ?: intent?.getStringExtra("edit_path")?.let { Uri.fromFile(File(it)) }
+            ?: intent?.getStringExtra("edit_path")?.takeIf { openedByThisApp }?.let { Uri.fromFile(File(it)) }
         if (uri == null) { finish(); return }
+        val cloud = cloudOrigin()
         setContent {
             OpenSyncTheme {
-                VideoEditorScreen(uri = uri, onClose = { finish() })
+                VideoEditorScreen(uri = uri, cloud = cloud, onSaved = { setResult(Activity.RESULT_OK) }, onClose = { finish() })
             }
         }
     }
@@ -168,7 +178,7 @@ private const val SCRUB_SEEK_INTERVAL_MS = 80L
 
 @OptIn(UnstableApi::class)
 @Composable
-private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
+private fun VideoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -203,6 +213,8 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
     var showTextDialog by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var progress by remember { mutableIntStateOf(0) }
+    var uploading by remember { mutableStateOf(false) }
+    var uploadFailure by remember { mutableStateOf<Pair<SavedEdit, Boolean>?>(null) } // and whether to close after
     var showSave by remember { mutableStateOf(false) }
     var resolution by remember { mutableStateOf(RESOLUTIONS.first()) }
     var playing by remember { mutableStateOf(false) }
@@ -214,7 +226,8 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
     val trimStart = edits.trimStartMs
     val trimEnd = edits.trimEndMs ?: durationMs
     val cropping = tool == VideoTool.TRANSFORM
-    val canOverwrite = remember(uri) { canOverwrite(context, uri) }
+    val canOverwrite = remember(uri) { canOverwrite(context, uri, cloud) }
+    val inAppStorage = remember(uri) { isInAppStorage(context, uri) }
 
     // The preview player. Effects must be set before prepare() to build the effect pipeline;
     // after that they can be swapped live.
@@ -340,10 +353,11 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
         }
     }
 
-    fun runSave(what: String, closeAfter: Boolean, block: suspend () -> File?) {
+    fun runSave(what: String, closeAfter: Boolean, block: suspend () -> SavedEdit) {
         showSave = false
         saving = true
         progress = 0
+        uploading = false
         // Free the preview's decoder for the export; many devices only have a couple.
         player.pause()
         player.stop()
@@ -357,9 +371,15 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                 Result.failure(e)
             }
             saving = false
-            result.onSuccess { f ->
-                Toast.makeText(context, f?.let { "$what saved to ${it.parentFile?.name ?: "storage"}" } ?: "$what saved", Toast.LENGTH_SHORT).show()
-                if (closeAfter) onClose() else player.prepare()
+            result.onSuccess { saved ->
+                onSaved()
+                if (saved.uploadError != null) {
+                    uploadFailure = saved to closeAfter // closes (if it was going to) once the user has read it
+                    if (!closeAfter) player.prepare()
+                } else {
+                    Toast.makeText(context, saved.message(what, cloud), Toast.LENGTH_SHORT).show()
+                    if (closeAfter) onClose() else player.prepare()
+                }
             }.onFailure {
                 Toast.makeText(context, "Couldn't save: ${it.message}", Toast.LENGTH_LONG).show()
                 player.prepare()
@@ -372,14 +392,16 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
         val e = edits
         val res = resolution
         runSave(if (overwrite) "Video" else "Copy", closeAfter = true) {
-            saveEditedVideo(context, uri, e, m, res, overwrite) { progress = it }
+            saveEditedVideo(context, uri, e, m, res, overwrite, cloud, onProgress = { progress = it }, onUploading = { uploading = true })
         }
     }
 
     fun saveGif() {
         val m = meta ?: return
         val e = edits
-        runSave("GIF", closeAfter = false) { saveEditedGif(context, uri, e, m) { progress = it } }
+        runSave("GIF", closeAfter = false) {
+            saveEditedGif(context, uri, e, m, cloud) { progress = it; if (cloud != null && it >= 100) uploading = true }
+        }
     }
 
     fun capture() {
@@ -390,8 +412,12 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
         if (shot !== bmp) shot.recycle()
         DecorationRenderer.draw(android.graphics.Canvas(bmp), bmp.width.toFloat(), bmp.height.toFloat(), edits.decorations, edits.strokes)
         scope.launch {
-            runCatching { saveFrameCapture(context, uri, bmp) }
-                .onSuccess { Toast.makeText(context, "Frame saved to ${it.parentFile?.name ?: "Pictures"}", Toast.LENGTH_SHORT).show() }
+            runCatching { saveFrameCapture(context, uri, cloud, bmp) }
+                .onSuccess {
+                    onSaved()
+                    if (it.uploadError != null) uploadFailure = it to false
+                    else Toast.makeText(context, it.message("Frame", cloud), Toast.LENGTH_SHORT).show()
+                }
                 .onFailure { Toast.makeText(context, "Couldn't save the frame: ${it.message}", Toast.LENGTH_LONG).show() }
             bmp.recycle()
         }
@@ -503,7 +529,10 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = Color.White)
                         Spacer(Modifier.height(12.dp))
-                        Text("Saving… $progress%", color = Color.White, fontSize = 13.sp)
+                        Text(
+                            if (uploading) "Uploading to ${cloud?.accountName}…" else "Saving… $progress%",
+                            color = Color.White, fontSize = 13.sp
+                        )
                     }
                 }
             }
@@ -644,6 +673,10 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
         )
     }
 
+    uploadFailure?.let { (saved, closeAfter) ->
+        UploadFailedDialog(cloud, saved) { uploadFailure = null; if (closeAfter) onClose() }
+    }
+
     if (showSave && meta != null) {
         val edited = editedSize(meta, edits)
         val options = RESOLUTIONS.filter { it.shortSide == null || it.shortSide < min(edited.first, edited.second) }
@@ -653,8 +686,14 @@ private fun VideoEditorScreen(uri: Uri, onClose: () -> Unit) {
             text = {
                 Column {
                     Text(
-                        if (canOverwrite) "Overwrite the original, or keep it and save a copy?"
-                        else "The edited video will be saved as a new MP4 copy; the original is kept."
+                        when {
+                            cloud != null && canOverwrite ->
+                                "Overwrite the original on ${cloud.accountName}, or keep it and save a copy next to it?"
+                            cloud != null -> "The edited video will be uploaded to ${cloud.accountName} as a new MP4 next to the original."
+                            canOverwrite -> "Overwrite the original, or keep it and save a copy?"
+                            inAppStorage -> "This video was downloaded to edit it, so the edit is saved as a new video in Movies/OpenSync."
+                            else -> "The edited video will be saved as a new MP4 copy; the original is kept."
+                        }
                     )
                     Spacer(Modifier.height(12.dp))
                     Text("Resolution", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

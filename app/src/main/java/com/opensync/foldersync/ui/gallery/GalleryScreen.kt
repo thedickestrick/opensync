@@ -177,15 +177,21 @@ fun GalleryScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showVaultConfirm by remember { mutableStateOf(false) }
 
+    // Opened for a result: that tells the editor it was us (so it trusts the path and account it's
+    // given), and tells us when something was saved so the folder can show it.
+    val editorLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == Activity.RESULT_OK) vm.refreshAfterEdit()
+    }
+
     fun launchEditor(item: MediaItem) {
         editScope.launch {
             val f = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { vm.materialize(item) }.getOrNull() }
             if (f != null) {
                 val editor = if (item.isVideo) com.opensync.foldersync.videoedit.VideoEditorActivity::class.java
                     else com.opensync.foldersync.PhotoEditorActivity::class.java
-                context.startActivity(
-                    android.content.Intent(context, editor).putExtra("edit_path", f.absolutePath)
-                )
+                val intent = android.content.Intent(context, editor).putExtra("edit_path", f.absolutePath)
+                vm.cloudOriginFor(item, f)?.putInto(intent)
+                editorLauncher.launch(intent)
             } else {
                 val what = if (item.isVideo) "video" else "photo"
                 android.widget.Toast.makeText(context, "Couldn't open this $what", android.widget.Toast.LENGTH_SHORT).show()
@@ -721,7 +727,16 @@ private fun MediaViewer(
     BackHandler(enabled = true) { onClose() }
     var index by remember { mutableStateOf(startIndex.coerceIn(0, items.lastIndex)) }
     var chrome by remember { mutableStateOf(false) }
-    LaunchedEffect(items.size) { if (index > items.lastIndex) index = items.lastIndex.coerceAtLeast(0) }
+    // When the list is reloaded (after an edit adds a copy, a delete…), stay on the same photo
+    // rather than the same position; if it's gone, stay put (showing its neighbour).
+    val shownList = remember { arrayOf(items) }
+    if (shownList[0] !== items) {
+        val key = shownList[0].getOrNull(index)?.key
+        val moved = items.indexOfFirst { it.key == key }
+        val target = if (moved >= 0) moved else index.coerceIn(0, items.lastIndex)
+        shownList[0] = items
+        if (target != index) index = target
+    }
     val current = items.getOrNull(index)
     val context = LocalContext.current
 
@@ -753,7 +768,8 @@ private fun MediaViewer(
             for (i in intArrayOf(index - 1, index, index + 1)) {
                 val item = items.getOrNull(i) ?: continue
                 if (item.isVideo && i != index) continue  // don't preload heavy video neighbours
-                key(item.key) {
+                // Keyed by version too, so a file changed by an edit is fetched and shown afresh.
+                key(item.key, item.remoteFile?.modifiedTime, item.remoteFile?.size) {
                     val active = i == index
                     Box(
                         Modifier

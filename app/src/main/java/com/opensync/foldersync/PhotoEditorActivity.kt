@@ -97,18 +97,21 @@ import androidx.compose.ui.graphics.ColorMatrix as ComposeColorMatrix
  * - Decorate: text, emoji stickers and freehand drawing
  * - Undo/redo, hold to compare with the original, save over the original or as a copy at a
  *   chosen size, keeping the format and EXIF details (date taken, location, camera).
- * Reachable internally (edit_path extra) and as a system image editor (ACTION_EDIT).
+ * Reachable internally (edit_path extra) and as a system image editor (ACTION_EDIT). A photo the
+ * gallery downloaded from one of the user's accounts is saved back to that account (see EditUpload.kt).
  */
 class PhotoEditorActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Paths and accounts are only taken from OpenSync itself, never from another app's request.
         val uri = intent?.data
-            ?: intent?.getStringExtra("edit_path")?.let { Uri.fromFile(File(it)) }
+            ?: intent?.getStringExtra("edit_path")?.takeIf { openedByThisApp }?.let { Uri.fromFile(File(it)) }
         if (uri == null) { finish(); return }
+        val cloud = cloudOrigin()
         setContent {
             OpenSyncTheme {
-                PhotoEditorScreen(uri = uri, onSaved = { setResult(Activity.RESULT_OK) }, onClose = { finish() })
+                PhotoEditorScreen(uri = uri, cloud = cloud, onSaved = { setResult(Activity.RESULT_OK) }, onClose = { finish() })
             }
         }
     }
@@ -135,13 +138,13 @@ private data class PreviewKey(
 )
 
 @Composable
-private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit) {
+private fun PhotoEditorScreen(uri: Uri, cloud: CloudOrigin?, onSaved: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val loaded by produceState<Result<Pair<Bitmap, PhotoSource>>?>(initialValue = null, uri) {
         value = withContext(Dispatchers.IO) {
-            runCatching { decodeUpright(context, uri, maxDim = PREVIEW_MAX_DIM) to readPhotoSource(context, uri) }
+            runCatching { decodeUpright(context, uri, maxDim = PREVIEW_MAX_DIM) to readPhotoSource(context, uri, cloud) }
         }
     }
     val base = loaded?.getOrNull()?.first
@@ -172,6 +175,8 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
     var showTextDialog by remember { mutableStateOf(false) }
     var comparing by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
+    var savingLabel by remember { mutableStateOf("Saving…") }
+    var uploadFailure by remember { mutableStateOf<SavedEdit?>(null) }
     var showSave by remember { mutableStateOf(false) }
     var showDiscard by remember { mutableStateOf(false) }
     var saveSize by remember { mutableStateOf(PHOTO_SIZES.first()) }
@@ -228,10 +233,13 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
     fun save(overwrite: Boolean, size: PhotoSize) {
         showSave = false
         saving = true
+        savingLabel = "Saving…"
         val e = edits
         scope.launch {
             val result = try {
-                Result.success(saveEditedPhoto(context, uri, e, size, overwrite))
+                Result.success(saveEditedPhoto(context, uri, e, size, overwrite, cloud) {
+                    savingLabel = "Uploading to ${cloud?.accountName}…"
+                })
             } catch (c: CancellationException) {
                 throw c // the editor was closed; nothing to report
             } catch (t: Throwable) {
@@ -239,11 +247,13 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
             }
             saving = false
             result.onSuccess { saved ->
-                val where = saved.file?.parentFile?.name
-                val msg = if (overwrite) "Saved" else "Saved a copy" + (where?.let { " to $it" } ?: "")
-                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                 onSaved()
-                onClose()
+                if (saved.uploadError != null) {
+                    uploadFailure = saved // closes once the user has read it
+                } else {
+                    Toast.makeText(context, saved.message(if (overwrite) "Photo" else "Copy", cloud), Toast.LENGTH_SHORT).show()
+                    onClose()
+                }
             }.onFailure {
                 val why = if (it is OutOfMemoryError) "not enough memory" else it.message ?: it.javaClass.simpleName
                 Toast.makeText(context, "Couldn't save: $why", Toast.LENGTH_LONG).show()
@@ -360,7 +370,7 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = Color.White)
                         Spacer(Modifier.height(12.dp))
-                        Text("Saving…", color = Color.White, fontSize = 13.sp)
+                        Text(savingLabel, color = Color.White, fontSize = 13.sp)
                     }
                 }
             }
@@ -467,6 +477,10 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
                 Column {
                     Text(
                         when {
+                            source.cloud != null && source.canOverwrite ->
+                                "Overwrite the original on ${source.cloud.accountName}, or keep it and save a copy next to it?"
+                            source.cloud != null ->
+                                "This kind of image can't be written back, so the edit is uploaded to ${source.cloud.accountName} as a new JPEG next to the original."
                             source.canOverwrite -> "Overwrite the original, or keep it and save a copy?"
                             source.inAppStorage -> "This photo was downloaded to edit it, so the edit is saved as a new photo in Pictures/OpenSync."
                             else -> "This kind of image can't be written back, so the edit is saved as a new JPEG; the original is kept."
@@ -500,6 +514,10 @@ private fun PhotoEditorScreen(uri: Uri, onSaved: () -> Unit, onClose: () -> Unit
                 else TextButton(onClick = { showSave = false }) { Text("Cancel") }
             }
         )
+    }
+
+    uploadFailure?.let { saved ->
+        UploadFailedDialog(cloud, saved) { uploadFailure = null; onClose() }
     }
 
     if (showDiscard) {
