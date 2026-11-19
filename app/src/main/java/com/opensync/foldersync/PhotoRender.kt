@@ -333,7 +333,7 @@ private suspend fun renderFull(context: Context, uri: Uri, e: PhotoEdits, size: 
  * original's format when we can write it (else JPEG), and JPEGs keep the original's EXIF details —
  * date taken, location, camera — so the edit sorts next to the original. A photo downloaded from
  * one of the user's accounts ([cloud]) is uploaded back there; [onUploading] says when that starts
- * and [onUploadProgress] how far it has got.
+ * and [onUploadProgress] how far it has got. A copy is named "[name]_[copySuffix]".
  */
 internal suspend fun saveEditedPhoto(
     context: Context,
@@ -343,7 +343,8 @@ internal suspend fun saveEditedPhoto(
     overwrite: Boolean,
     cloud: CloudOrigin?,
     onUploading: () -> Unit = {},
-    onUploadProgress: ((UploadStatus) -> Unit)? = null
+    onUploadProgress: ((UploadStatus) -> Unit)? = null,
+    copySuffix: String = "edited"
 ): SavedEdit = withContext(Dispatchers.IO) {
     val source = readPhotoSource(context, uri, cloud)
     check(!overwrite || source.canOverwrite) { "This photo can only be saved as a copy" }
@@ -368,7 +369,7 @@ internal suspend fun saveEditedPhoto(
         when {
             cloud != null ->
                 deliverToCloud(
-                    context, cloud, tmp, overwrite, "${baseName}_edited", format.ext, Environment.DIRECTORY_PICTURES,
+                    context, cloud, tmp, overwrite, "${baseName}_$copySuffix", format.ext, Environment.DIRECTORY_PICTURES,
                     onUploading, onUploadProgress
                 )
             overwrite && srcFile != null -> {
@@ -386,7 +387,7 @@ internal suspend fun saveEditedPhoto(
             else -> {
                 val dir = srcFile?.parentFile?.takeIf { !source.inAppStorage && it.canWrite() }
                     ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "OpenSync").apply { mkdirs() }
-                val f = uniqueFile(dir, "${baseName}_edited", format.ext)
+                val f = uniqueFile(dir, "${baseName}_$copySuffix", format.ext)
                 tmp.inputStream().use { input -> FileOutputStream(f).use { input.copyTo(it) } }
                 scanFile(context, f)
                 SavedEdit(file = f)

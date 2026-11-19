@@ -2,6 +2,29 @@ package com.opensync.foldersync.ui.gallery
 
 import android.app.Activity
 import android.net.Uri
+import android.view.LayoutInflater
+import android.view.View
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import com.opensync.foldersync.CloudOrigin
+import com.opensync.foldersync.NormRect
+import com.opensync.foldersync.SaveProgress
+import com.opensync.foldersync.SavedEdit
+import com.opensync.foldersync.UploadFailedDialog
+import com.opensync.foldersync.UploadProgressBar
+import com.opensync.foldersync.UploadStatus
+import com.opensync.foldersync.ZOOMED_IN
+import com.opensync.foldersync.savePhotoArea
+import com.opensync.foldersync.saveVideoStill
+import com.opensync.foldersync.visibleRegion
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -104,6 +127,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -340,7 +364,9 @@ fun GalleryScreen(
             onDelete = { viewerDeleteItem = it },
             onEdit = { launchEditor(it) },
             onShare = { vm.shareViewerItem(it) },
-            onVault = { viewerVaultItem = it }
+            onVault = { viewerVaultItem = it },
+            cloudOf = { item, file -> vm.cloudOriginFor(item, file) },
+            onCaptured = { vm.refreshAfterEdit() }
         )
     }
 
@@ -721,7 +747,9 @@ private fun MediaViewer(
     onDelete: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
     onShare: (MediaItem) -> Unit = {},
-    onVault: (MediaItem) -> Unit = {}
+    onVault: (MediaItem) -> Unit = {},
+    cloudOf: (MediaItem, File) -> CloudOrigin? = { _, _ -> null },
+    onCaptured: () -> Unit = {}
 ) {
     if (items.isEmpty()) { onClose(); return }
     BackHandler(enabled = true) { onClose() }
@@ -739,6 +767,56 @@ private fun MediaViewer(
     }
     val current = items.getOrNull(index)
     val context = LocalContext.current
+
+    // Saving the zoomed-in part of a photo, or a video's frame, as a new picture beside it.
+    val scope = rememberCoroutineScope()
+    var capturing by remember { mutableStateOf(false) }
+    var captureShown by remember { mutableStateOf(false) } // after a moment, so a quick save doesn't flash
+    var captureUploading by remember { mutableStateOf(false) }
+    var captureUpload by remember { mutableStateOf<UploadStatus?>(null) }
+    var captureCloud by remember { mutableStateOf<CloudOrigin?>(null) }
+    var captureFailure by remember { mutableStateOf<SavedEdit?>(null) }
+    BackHandler(enabled = capturing) {} // don't abandon a save half-way
+    LaunchedEffect(capturing) {
+        captureShown = false
+        if (capturing) { delay(300); captureShown = true }
+    }
+    fun capture(item: MediaItem, request: Capture) {
+        if (capturing) return
+        capturing = true
+        captureUploading = false
+        captureUpload = null
+        captureCloud = null
+        scope.launch {
+            val result = try {
+                val file = materialize(item)
+                val cloud = cloudOf(item, file).also { captureCloud = it }
+                val uri = Uri.fromFile(file)
+                val onUploading = { captureUploading = true }
+                val onUploadProgress = { s: UploadStatus -> captureUpload = s }
+                Result.success(
+                    when (request) {
+                        is Capture.PhotoArea -> savePhotoArea(context, uri, cloud, request.region, onUploading, onUploadProgress)
+                        is Capture.VideoFrame ->
+                            saveVideoStill(context, uri, cloud, request.positionMs, request.region, onUploading, onUploadProgress)
+                    }
+                )
+            } catch (c: CancellationException) {
+                throw c // the viewer was closed; nothing to report
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+            capturing = false
+            result.onSuccess { saved ->
+                onCaptured()
+                if (saved.uploadError != null) captureFailure = saved
+                else android.widget.Toast.makeText(context, saved.message("Picture", captureCloud), android.widget.Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                val why = if (it is OutOfMemoryError) "not enough memory" else it.message ?: it.javaClass.simpleName
+                android.widget.Toast.makeText(context, "Couldn't save the picture: $why", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     // Immersive + suppress the nav-drawer edge swipe while the viewer is open.
     val view = LocalView.current
@@ -784,7 +862,8 @@ private fun MediaViewer(
                             onPrev = { if (index > 0) index-- },
                             onNext = { if (index < items.lastIndex) index++ },
                             onLongPress = { onShowDetails(item) },
-                            onTap = { chrome = !chrome }
+                            onTap = { chrome = !chrome },
+                            onCapture = if (active && !capturing) { request -> capture(item, request) } else null
                         )
                     }
                 }
@@ -879,7 +958,48 @@ private fun MediaViewer(
                     }
                 }
             }
+
+            if (capturing) {
+                // Swallows touches so nothing changes under a save in progress.
+                Box(
+                    Modifier.fillMaxSize().zIndex(3f)
+                        .background(if (captureShown) Color(0x99000000) else Color.Transparent)
+                        .pointerInput(Unit) { awaitEachGesture { awaitFirstDown().consume() } },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (captureShown) {
+                        if (captureUploading) UploadProgressBar(captureCloud, captureUpload)
+                        else SaveProgress("Saving picture…", fraction = null)
+                    }
+                }
+            }
         }
+    }
+    captureFailure?.let { saved ->
+        UploadFailedDialog(captureCloud, saved) { captureFailure = null }
+    }
+}
+
+/** What the viewer's capture button asked to save. */
+private sealed interface Capture {
+    /** This part of the photo (0..1 of its upright size). */
+    data class PhotoArea(val region: NormRect) : Capture
+
+    /** The video's frame at [positionMs]; only [region] of it when zoomed in. */
+    data class VideoFrame(val positionMs: Long, val region: NormRect?) : Capture
+}
+
+/** Up the right edge: clear of the top bar and of the video player's controls across the middle. */
+private val CAPTURE_BUTTON_SPOT = BiasAlignment(horizontalBias = 1f, verticalBias = -0.4f)
+
+/** The round button at the right edge of the viewer that saves what's on screen as a picture. */
+@Composable
+private fun CaptureButton(icon: ImageVector, description: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.padding(end = 12.dp).size(52.dp).clip(CircleShape).background(Color(0x99000000)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, description, tint = Color.White)
     }
 }
 
@@ -891,7 +1011,8 @@ private fun MediaPage(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onLongPress: () -> Unit = {},
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    onCapture: ((Capture) -> Unit)? = null // null hides the capture button
 ) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
         value = item.deviceUri ?: runCatching { materialize(item) }.getOrNull()
@@ -899,8 +1020,14 @@ private fun MediaPage(
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             model == null -> if (active) CircularProgressIndicator(color = Color.White)
-            item.isVideo -> VideoPlayer(model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap)
-            else -> ZoomableImage(model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap)
+            item.isVideo -> VideoPlayer(
+                model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap,
+                onCapture = onCapture
+            )
+            else -> ZoomableImage(
+                model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap,
+                onCapture = onCapture
+            )
         }
     }
 }
@@ -912,7 +1039,8 @@ private fun VideoPlayer(
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
     onLongPress: () -> Unit = {},
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    onCapture: ((Capture) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val uri: Uri = when (model) {
@@ -928,41 +1056,107 @@ private fun VideoPlayer(
         }
     }
     DisposableEffect(uri) { onDispose { exo.release() } }
-    // Tap (chrome) and long-press (details) are handled without swallowing the player's own
-    // tap-to-toggle controls, so one tap raises both.
-    Box(
-        Modifier.fillMaxSize()
-            .then(if (active) Modifier.horizontalSwipe(uri, onPrev, onNext) else Modifier)
-            .then(if (active) Modifier.tapPassthrough(uri, onTap, onLongPress) else Modifier)
-    ) {
-        AndroidView(
-            factory = { ctx -> PlayerView(ctx).apply { player = exo } },
-            modifier = Modifier.fillMaxSize()
-        )
+    var scale by remember(uri) { mutableStateOf(1f) }
+    var offset by remember(uri) { mutableStateOf(Offset.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    var controlsShown by remember(uri) { mutableStateOf(false) }
+
+    Box(Modifier.fillMaxSize().onSizeChanged { boxSize = it }) {
+        // Tap (chrome) and long-press (details) are handled without swallowing the player's own
+        // tap-to-toggle controls, so one tap raises both.
+        Box(
+            Modifier.fillMaxSize()
+                .then(
+                    if (!active) Modifier else Modifier.videoGestures(
+                        uri,
+                        scale = { scale },
+                        onZoom = { zoom, pan ->
+                            scale = (scale * zoom).coerceIn(1f, 6f)
+                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                        },
+                        onPrev = onPrev,
+                        onNext = onNext
+                    )
+                )
+                .then(if (active) Modifier.tapPassthrough(uri, onTap, onLongPress) else Modifier)
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    (LayoutInflater.from(ctx).inflate(com.opensync.foldersync.R.layout.viewer_player, null, false) as PlayerView).apply {
+                        player = exo
+                        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { controlsShown = it == View.VISIBLE })
+                    }
+                },
+                // Zoom the picture's frame only, so the player's controls stay put.
+                update = { v ->
+                    (v.videoSurfaceView?.parent as? View)?.apply {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        if (onCapture != null && (controlsShown || scale > ZOOMED_IN)) {
+            CaptureButton(
+                Icons.Filled.PhotoCamera,
+                if (scale > ZOOMED_IN) "Save the zoomed-in part of this frame as a picture" else "Save this frame as a picture",
+                Modifier.align(CAPTURE_BUTTON_SPOT)
+            ) {
+                exo.pause()
+                val region = if (scale <= ZOOMED_IN) null else {
+                    val vs = exo.videoSize
+                    val sideways = vs.unappliedRotationDegrees == 90 || vs.unappliedRotationDegrees == 270
+                    val w = vs.width * vs.pixelWidthHeightRatio
+                    val h = vs.height.toFloat()
+                    visibleRegion(
+                        boxSize.width.toFloat(), boxSize.height.toFloat(),
+                        if (sideways) h else w, if (sideways) w else h,
+                        scale, offset.x, offset.y
+                    ) ?: return@CaptureButton // zoomed into the black bars: nothing of the video to save
+                }
+                onCapture(Capture.VideoFrame(exo.currentPosition, region))
+            }
+        }
     }
 }
 
 /**
- * Detects a horizontal swipe on the Initial pointer pass and consumes it, so a swipe changes item
- * while taps still reach the video's play/pause controls underneath.
+ * The video's own gestures, on the Initial pointer pass: pinch to zoom, then drag to look around;
+ * when it isn't zoomed, a horizontal swipe changes item. Only what it uses is consumed, so taps
+ * still reach the player's play/pause controls underneath.
  */
-private fun Modifier.horizontalSwipe(key: Any, onPrev: () -> Unit, onNext: () -> Unit): Modifier =
+private fun Modifier.videoGestures(
+    key: Any,
+    scale: () -> Float,
+    onZoom: (zoom: Float, pan: Offset) -> Unit,
+    onPrev: () -> Unit,
+    onNext: () -> Unit
+): Modifier =
     pointerInput(key) {
         val slop = viewConfiguration.touchSlop
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
             var dx = 0f
             var dy = 0f
-            var claimed = false
+            var swiping = false
+            var zooming = false
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val pan = event.calculatePan()
                 dx += pan.x; dy += pan.y
-                if (!claimed && abs(dx) > slop && abs(dx) > abs(dy)) claimed = true
-                if (claimed) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                val moved = abs(dx) > slop || abs(dy) > slop
+                if (!swiping && !zooming) {
+                    if (event.changes.count { it.pressed } > 1 || (scale() > ZOOMED_IN && moved)) zooming = true
+                    else if (abs(dx) > slop && abs(dx) > abs(dy)) swiping = true
+                }
+                if (zooming) onZoom(event.calculateZoom(), pan)
+                if (zooming || swiping) event.changes.forEach { if (it.positionChanged()) it.consume() }
                 if (event.changes.none { it.pressed }) break
             }
-            if (claimed) {
+            if (swiping) {
                 val threshold = size.width * 0.15f
                 if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
             }
@@ -991,6 +1185,8 @@ private fun Modifier.tapPassthrough(
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == down.id }
+                        // Claimed by a swipe or a pinch-zoom → neither a tap nor a long-press.
+                        if (event.changes.any { it.isConsumed }) return@withTimeout
                         if (change == null || !change.pressed) { lifted = true; return@withTimeout }
                         moved += change.positionChange().getDistance()
                         if (moved > slop) return@withTimeout // dragging → neither tap nor long-press
@@ -1057,68 +1253,83 @@ private fun ZoomableImage(
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
     onLongPress: () -> Unit = {},
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    onCapture: ((Capture) -> Unit)? = null
 ) {
     var scale by remember(model) { mutableStateOf(1f) }
     var offset by remember(model) { mutableStateOf(Offset.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    var imageSize by remember(model) { mutableStateOf(Size.Unspecified) } // only its shape matters
     val context = LocalContext.current
-    AsyncImage(
-        model = remember(model) { ImageRequest.Builder(context).data(model).crossfade(false).build() },
-        contentDescription = null,
-        contentScale = ContentScale.Fit,
-        modifier = Modifier
-            .fillMaxSize()
-            // Tap toggles the viewer chrome; double-tap zooms; long-press shows details.
-            .pointerInput(model, active) {
-                if (!active) return@pointerInput
-                detectInstantTaps(
-                    onTap = { onTap() },
-                    onLongPress = { onLongPress() },
-                    onDoubleTap = {
-                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
-                    }
-                )
-            }
-            // Pinch/pan when zoomed; otherwise a horizontal swipe jumps to the next item instantly.
-            .pointerInput(model, active) {
-                if (!active) return@pointerInput
-                awaitEachGesture {
-                    val slop = viewConfiguration.touchSlop
-                    awaitFirstDown(requireUnconsumed = false)
-                    var dx = 0f
-                    var dy = 0f
-                    var zoomed = false
-                    // Nothing is consumed until the finger travels past touch slop. This handler runs
-                    // before the tap detector on the Main pass, and a consumed move cancels a tap —
-                    // so consuming eagerly would swallow taps that carry a pixel or two of jitter.
-                    var dragging = false
-                    do {
-                        val event = awaitPointerEvent()
-                        val multiTouch = event.changes.count { it.pressed } > 1
-                        val pan = event.calculatePan()
-                        dx += pan.x; dy += pan.y
-                        if (!dragging && (multiTouch || abs(dx) > slop || abs(dy) > slop)) dragging = true
-                        if (multiTouch || scale > 1f) {
-                            if (dragging) {
-                                zoomed = true
-                                scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
-                                offset = if (scale > 1f) offset + pan else Offset.Zero
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
-                        } else {
-                            // Consume so the nav drawer / other ancestors don't treat this as their swipe.
-                            if (dragging && abs(dx) > abs(dy)) {
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
+    Box(Modifier.fillMaxSize().onSizeChanged { boxSize = it }) {
+        AsyncImage(
+            model = remember(model) { ImageRequest.Builder(context).data(model).crossfade(false).build() },
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            onSuccess = { imageSize = it.painter.intrinsicSize },
+            modifier = Modifier
+                .fillMaxSize()
+                // Tap toggles the viewer chrome; double-tap zooms; long-press shows details.
+                .pointerInput(model, active) {
+                    if (!active) return@pointerInput
+                    detectInstantTaps(
+                        onTap = { onTap() },
+                        onLongPress = { onLongPress() },
+                        onDoubleTap = {
+                            if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
                         }
-                    } while (event.changes.any { it.pressed })
-                    if (!zoomed && scale <= 1f && dragging && abs(dx) > abs(dy)) {
-                        val threshold = size.width * 0.15f
-                        if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
+                    )
+                }
+                // Pinch/pan when zoomed; otherwise a horizontal swipe jumps to the next item instantly.
+                .pointerInput(model, active) {
+                    if (!active) return@pointerInput
+                    awaitEachGesture {
+                        val slop = viewConfiguration.touchSlop
+                        awaitFirstDown(requireUnconsumed = false)
+                        var dx = 0f
+                        var dy = 0f
+                        var zoomed = false
+                        // Nothing is consumed until the finger travels past touch slop. This handler runs
+                        // before the tap detector on the Main pass, and a consumed move cancels a tap —
+                        // so consuming eagerly would swallow taps that carry a pixel or two of jitter.
+                        var dragging = false
+                        do {
+                            val event = awaitPointerEvent()
+                            val multiTouch = event.changes.count { it.pressed } > 1
+                            val pan = event.calculatePan()
+                            dx += pan.x; dy += pan.y
+                            if (!dragging && (multiTouch || abs(dx) > slop || abs(dy) > slop)) dragging = true
+                            if (multiTouch || scale > 1f) {
+                                if (dragging) {
+                                    zoomed = true
+                                    scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            } else {
+                                // Consume so the nav drawer / other ancestors don't treat this as their swipe.
+                                if (dragging && abs(dx) > abs(dy)) {
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+                        if (!zoomed && scale <= 1f && dragging && abs(dx) > abs(dy)) {
+                            val threshold = size.width * 0.15f
+                            if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
+                        }
                     }
                 }
+                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
+        )
+        // Zoomed in: offer to keep just the part on screen, as Samsung Gallery does.
+        if (active && onCapture != null && scale > ZOOMED_IN && imageSize.isSpecified) {
+            CaptureButton(Icons.Filled.Crop, "Save the zoomed-in part as a new picture", Modifier.align(CAPTURE_BUTTON_SPOT)) {
+                visibleRegion(
+                    boxSize.width.toFloat(), boxSize.height.toFloat(), imageSize.width, imageSize.height,
+                    scale, offset.x, offset.y
+                )?.let { onCapture(Capture.PhotoArea(it)) }
             }
-            .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
-    )
+        }
+    }
 }
 

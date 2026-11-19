@@ -23,8 +23,11 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
 - **Device** photos/videos via Android's MediaStore, grouped into albums (fast, native feel).
 - **Folder albums** for local folders and remote accounts — browse into any folder and see
   its media as a grid; remote image thumbnails download progressively (size-capped).
-- Full-screen viewer with **swipe** between items and **pinch-to-zoom**; videos open in your
-  player of choice.
+- Full-screen viewer with **swipe** between items and **pinch-to-zoom** (photos and videos).
+- **Save what's on screen** (as in Samsung Gallery): zoom into a photo and tap the crop button to keep
+  just that part as a new picture, or tap the camera button on a video to save the frame it's
+  showing — only the zoomed-in part, if you've pinched in. They're cut from the full-size original,
+  saved beside it (or uploaded to its account) as "…_capture".
 - Built-in **photo editor** (modelled on Samsung Gallery's): transform (crop free or at a fixed
   ratio, straighten that zooms to fill, rotate, flip); filters with intensity; tone (the same ten
   adjustments as the video editor, plus Auto); decorate with text, emoji stickers and drawing;
@@ -152,7 +155,6 @@ app/src/main/java/com/opensync/foldersync/
   experiment with first.
 - Remote gallery thumbnails download the file to cache (servers don't provide thumbnails);
   large files (>15 MB) show an icon instead. Remote video thumbnails are skipped.
-- Videos play via an external player intent (no in-app player yet).
 - **SMB**: use SMB2/SMB3 (modern Windows/NAS). In the account, put the server IP/hostname,
   your Windows **domain** (blank for a workgroup or local account), username, password, and a
   path. Leave the path **blank or `/`** to browse **all shares** on the server (enumerated over

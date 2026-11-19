@@ -375,13 +375,14 @@ private suspend fun keepBeside(
     made: File,
     suffix: String,
     ext: String,
-    onUploadProgress: ((UploadStatus) -> Unit)? = null
+    onUploadProgress: ((UploadStatus) -> Unit)? = null,
+    onUploading: () -> Unit = {}
 ): SavedEdit {
     val base = "${baseName(uri, "video")}_$suffix"
     if (cloud != null) {
         return deliverToCloud(
             context, cloud, made, overwrite = false, base, ext, Environment.DIRECTORY_PICTURES,
-            onUploadProgress = onUploadProgress
+            onUploading, onUploadProgress
         )
     }
     return withContext(Dispatchers.IO) {
@@ -447,11 +448,18 @@ internal suspend fun saveEditedGif(
 }
 
 /** Saves a still (already rendered with the edits) as a JPEG next to the video. */
-internal suspend fun saveFrameCapture(context: Context, uri: Uri, cloud: CloudOrigin?, frame: Bitmap): SavedEdit {
+internal suspend fun saveFrameCapture(
+    context: Context,
+    uri: Uri,
+    cloud: CloudOrigin?,
+    frame: Bitmap,
+    onUploading: () -> Unit = {},
+    onUploadProgress: ((UploadStatus) -> Unit)? = null
+): SavedEdit {
     val tmp = tempFile(context, "jpg")
     try {
         withContext(Dispatchers.IO) { FileOutputStream(tmp).use { frame.compress(Bitmap.CompressFormat.JPEG, 95, it) } }
-        return keepBeside(context, uri, cloud, tmp, "capture", "jpg")
+        return keepBeside(context, uri, cloud, tmp, "capture", "jpg", onUploadProgress, onUploading)
     } finally {
         tmp.delete()
     }
