@@ -5,6 +5,7 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.app.Activity
 import android.net.Uri
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
@@ -135,7 +136,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -1002,14 +1002,32 @@ private sealed interface Capture {
 private val STRIP_TILE = 54.dp
 private val STRIP_PADDING = 8.dp
 
-/** Up the right edge: clear of the top bar and of the video player's controls across the middle. */
-private val CAPTURE_BUTTON_SPOT = BiasAlignment(horizontalBias = 1f, verticalBias = -0.4f)
+/**
+ * How far the bottom of the video player's controls reaches up: its seek bar (48dp, with its touch
+ * area) on a 52dp margin above the bottom bar of times. media3's default controls layout.
+ */
+private val VIDEO_SEEK_BAR_TOP = 100.dp
 
-/** The round button at the right edge of the viewer that saves what's on screen as a picture. */
+/**
+ * The round button in the bottom-left corner of the viewer that saves what's on screen as a picture.
+ * While the bars show ([chrome]) it sits above the filmstrip — and on a [video], above the player's
+ * seek bar too — and drops to the corner when they hide.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CaptureButton(icon: ImageVector, description: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun BoxScope.CaptureButton(
+    icon: ImageVector,
+    description: String,
+    chrome: Boolean,
+    video: Boolean,
+    onClick: () -> Unit
+) {
+    val navBar = with(LocalDensity.current) { WindowInsets.navigationBarsIgnoringVisibility.getBottom(this).toDp() }
+    val above = if (!chrome) 0.dp else STRIP_TILE + STRIP_PADDING * 2 + if (video) VIDEO_SEEK_BAR_TOP else 0.dp
+    val bottom by animateDpAsState(navBar + above + 12.dp, label = "capture button")
     Box(
-        modifier.padding(end = 12.dp).size(52.dp).clip(CircleShape).background(Color(0x99000000)).clickable(onClick = onClick),
+        Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = bottom)
+            .size(52.dp).clip(CircleShape).background(Color(0x99000000)).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, description, tint = Color.White)
@@ -1041,7 +1059,7 @@ private fun MediaPage(
             )
             else -> ZoomableImage(
                 model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap,
-                onCapture = onCapture
+                chrome = chrome, onCapture = onCapture
             )
         }
     }
@@ -1177,7 +1195,8 @@ private fun VideoPlayer(
             CaptureButton(
                 Icons.Filled.PhotoCamera,
                 if (scale > ZOOMED_IN) "Save the zoomed-in part of this frame as a picture" else "Save this frame as a picture",
-                Modifier.align(CAPTURE_BUTTON_SPOT)
+                chrome = chrome || controlsShown,
+                video = true
             ) {
                 exo.pause()
                 val region = if (scale <= ZOOMED_IN) null else {
@@ -1295,6 +1314,7 @@ private fun ZoomableImage(
     onNext: () -> Unit = {},
     onLongPress: () -> Unit = {},
     onTap: () -> Unit = {},
+    chrome: Boolean = false,
     onCapture: ((Capture) -> Unit)? = null
 ) {
     var scale by remember(model) { mutableStateOf(1f) }
@@ -1364,7 +1384,7 @@ private fun ZoomableImage(
         )
         // Zoomed in: offer to keep just the part on screen, as Samsung Gallery does.
         if (active && onCapture != null && scale > ZOOMED_IN && imageSize.isSpecified) {
-            CaptureButton(Icons.Filled.Crop, "Save the zoomed-in part as a new picture", Modifier.align(CAPTURE_BUTTON_SPOT)) {
+            CaptureButton(Icons.Filled.Crop, "Save the zoomed-in part as a new picture", chrome = chrome, video = false) {
                 visibleRegion(
                     boxSize.width.toFloat(), boxSize.height.toFloat(), imageSize.width, imageSize.height,
                     scale, offset.x, offset.y
