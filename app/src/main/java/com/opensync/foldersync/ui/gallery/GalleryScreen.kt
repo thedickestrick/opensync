@@ -1,7 +1,15 @@
 package com.opensync.foldersync.ui.gallery
 
+import android.annotation.SuppressLint
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.app.Activity
 import android.net.Uri
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.rememberUpdatedState
 import android.view.LayoutInflater
 import android.view.View
 import androidx.compose.foundation.shape.CircleShape
@@ -137,11 +145,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -863,6 +869,9 @@ private fun MediaViewer(
                             onNext = { if (index < items.lastIndex) index++ },
                             onLongPress = { onShowDetails(item) },
                             onTap = { chrome = !chrome },
+                            chrome = chrome,
+                            // A video's controls and the bars show and hide together.
+                            onControlsChange = { shown -> if (active) chrome = shown },
                             onCapture = if (active && !capturing) { request -> capture(item, request) } else null
                         )
                     }
@@ -922,10 +931,10 @@ private fun MediaViewer(
                 BoxWithConstraints(
                     Modifier.fillMaxWidth().background(Color(0xB3000000)).navigationBarsPadding()
                 ) {
-                    val tile = 54.dp
+                    val tile = STRIP_TILE
                     val sidePad = (maxWidth - tile) / 2 // so the first/last tiles can reach the centre
                     LazyRow(
-                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        Modifier.fillMaxWidth().padding(vertical = STRIP_PADDING),
                         state = stripState,
                         contentPadding = PaddingValues(horizontal = sidePad),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -989,6 +998,10 @@ private sealed interface Capture {
     data class VideoFrame(val positionMs: Long, val region: NormRect?) : Capture
 }
 
+/** The viewer's bottom filmstrip: the size of its tiles, and the space above and below them. */
+private val STRIP_TILE = 54.dp
+private val STRIP_PADDING = 8.dp
+
 /** Up the right edge: clear of the top bar and of the video player's controls across the middle. */
 private val CAPTURE_BUTTON_SPOT = BiasAlignment(horizontalBias = 1f, verticalBias = -0.4f)
 
@@ -1012,6 +1025,8 @@ private fun MediaPage(
     onNext: () -> Unit,
     onLongPress: () -> Unit = {},
     onTap: () -> Unit = {},
+    chrome: Boolean = false,
+    onControlsChange: (shown: Boolean) -> Unit = {},
     onCapture: ((Capture) -> Unit)? = null // null hides the capture button
 ) {
     val model by produceState<Any?>(initialValue = item.deviceUri, item.key) {
@@ -1021,8 +1036,8 @@ private fun MediaPage(
         when {
             model == null -> if (active) CircularProgressIndicator(color = Color.White)
             item.isVideo -> VideoPlayer(
-                model!!, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap,
-                onCapture = onCapture
+                model!!, chrome = chrome, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress,
+                onTap = onTap, onControlsChange = onControlsChange, onCapture = onCapture
             )
             else -> ZoomableImage(
                 model, active = active, onPrev = onPrev, onNext = onNext, onLongPress = onLongPress, onTap = onTap,
@@ -1032,14 +1047,24 @@ private fun MediaPage(
     }
 }
 
+/**
+ * A video in the viewer. Its player controls and the viewer's bars ([chrome]) show and hide as one:
+ * a tap anywhere but on a control toggles the bars ([onTap]) and the controls follow them; when the
+ * player shows or hides its controls by itself (paused, finished, a few seconds into playback) it
+ * says so through [onControlsChange], and the bars follow that.
+ */
+@SuppressLint("ClickableViewAccessibility") // taps are read from the touches; the player stays clickable
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VideoPlayer(
     model: Any,
+    chrome: Boolean,
     active: Boolean = true,
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
     onLongPress: () -> Unit = {},
     onTap: () -> Unit = {},
+    onControlsChange: (shown: Boolean) -> Unit = {},
     onCapture: ((Capture) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -1055,15 +1080,39 @@ private fun VideoPlayer(
             playWhenReady = false
         }
     }
-    DisposableEffect(uri) { onDispose { exo.release() } }
+    // Releasing the player makes it show its controls; that mustn't raise the bars over the next item.
+    val alive = remember(uri) { booleanArrayOf(true) }
+    DisposableEffect(uri) { onDispose { alive[0] = false; exo.release() } }
     var scale by remember(uri) { mutableStateOf(1f) }
     var offset by remember(uri) { mutableStateOf(Offset.Zero) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var controlsShown by remember(uri) { mutableStateOf(false) }
+    var playerView by remember(uri) { mutableStateOf<PlayerView?>(null) }
+    val tap by rememberUpdatedState(onTap)
+    val longPress by rememberUpdatedState(onLongPress)
+    val controlsChange by rememberUpdatedState(onControlsChange)
+    val isActive by rememberUpdatedState(active)
+
+    // The bars lead: the controls show and hide with them. The controls report every change as they
+    // animate (even "visible" as a hide starts), so only one that differs from what was asked and
+    // wasn't reported while asking — one the player made itself — moves the bars.
+    val asked = remember(uri) { ControlsAsk() }
+    LaunchedEffect(playerView, chrome) {
+        val v = playerView ?: return@LaunchedEffect
+        asked.shown = chrome
+        asked.asking = true
+        try {
+            if (chrome) v.showController() else v.hideController()
+        } finally {
+            asked.asking = false
+        }
+    }
+    // The filmstrip shows with the controls, so their bottom bar (seek bar, times) goes above it.
+    val density = LocalDensity.current
+    val controlsBottom = with(density) { (STRIP_TILE + STRIP_PADDING * 2).roundToPx() } +
+        WindowInsets.navigationBarsIgnoringVisibility.getBottom(density)
 
     Box(Modifier.fillMaxSize().onSizeChanged { boxSize = it }) {
-        // Tap (chrome) and long-press (details) are handled without swallowing the player's own
-        // tap-to-toggle controls, so one tap raises both.
         Box(
             Modifier.fillMaxSize()
                 .then(
@@ -1078,22 +1127,47 @@ private fun VideoPlayer(
                         onNext = onNext
                     )
                 )
-                .then(if (active) Modifier.tapPassthrough(uri, onTap, onLongPress) else Modifier)
         ) {
             AndroidView(
                 factory = { ctx ->
                     (LayoutInflater.from(ctx).inflate(com.opensync.foldersync.R.layout.viewer_player, null, false) as PlayerView).apply {
                         player = exo
-                        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { controlsShown = it == View.VISIBLE })
+                        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener {
+                            val shown = it == View.VISIBLE
+                            controlsShown = shown
+                            if (alive[0] && isActive && !asked.asking && shown != asked.shown) {
+                                asked.shown = shown
+                                controlsChange(shown)
+                            }
+                        })
+                        // Touches no control took (play, the seek bar…) arrive here, on the player or on
+                        // the picture (which has the player's own tap-to-toggle). Reading taps from them
+                        // instead keeps the controls and the bars in step. A swipe or pinch claimed by
+                        // videoGestures arrives as a cancel.
+                        val detector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                            override fun onDown(e: MotionEvent) = true
+                            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                                tap()
+                                return true
+                            }
+                            override fun onLongPress(e: MotionEvent) = longPress()
+                        })
+                        val touches = View.OnTouchListener { _, e -> detector.onTouchEvent(e); true }
+                        setOnTouchListener(touches)
+                        videoSurfaceView?.setOnTouchListener(touches)
+                        playerView = this
                     }
                 },
-                // Zoom the picture's frame only, so the player's controls stay put.
                 update = { v ->
+                    // Zoom the picture's frame only, so the player's controls stay put.
                     (v.videoSurfaceView?.parent as? View)?.apply {
                         scaleX = scale
                         scaleY = scale
                         translationX = offset.x
                         translationY = offset.y
+                    }
+                    v.findViewById<View>(androidx.media3.ui.R.id.exo_controller)?.let { c ->
+                        if (c.paddingBottom != controlsBottom) c.setPadding(0, 0, 0, controlsBottom)
                     }
                 },
                 modifier = Modifier.fillMaxSize()
@@ -1121,6 +1195,12 @@ private fun VideoPlayer(
             }
         }
     }
+}
+
+/** What the viewer's bars last asked of a video's controls, and whether that call is under way. */
+private class ControlsAsk {
+    var shown = false
+    var asking = false
 }
 
 /**
@@ -1159,45 +1239,6 @@ private fun Modifier.videoGestures(
             if (swiping) {
                 val threshold = size.width * 0.15f
                 if (dx <= -threshold) onNext() else if (dx >= threshold) onPrev()
-            }
-        }
-    }
-
-/**
- * Fires [onTap] on a quick tap and [onLongPress] on a held finger, without consuming any pointer
- * events — so the same tap still reaches the video player's own play/pause controls underneath.
- */
-private fun Modifier.tapPassthrough(
-    key: Any,
-    onTap: () -> Unit,
-    onLongPress: () -> Unit
-): Modifier =
-    pointerInput(key) {
-        val timeout = viewConfiguration.longPressTimeoutMillis
-        val slop = viewConfiguration.touchSlop
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            var moved = 0f
-            var lifted = false
-            var held = false
-            try {
-                withTimeout(timeout) {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                        // Claimed by a swipe or a pinch-zoom → neither a tap nor a long-press.
-                        if (event.changes.any { it.isConsumed }) return@withTimeout
-                        if (change == null || !change.pressed) { lifted = true; return@withTimeout }
-                        moved += change.positionChange().getDistance()
-                        if (moved > slop) return@withTimeout // dragging → neither tap nor long-press
-                    }
-                }
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                held = true
-            }
-            when {
-                held -> onLongPress()
-                lifted && moved <= slop -> onTap()
             }
         }
     }

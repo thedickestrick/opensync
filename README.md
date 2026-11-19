@@ -23,7 +23,8 @@ It is clean-room — not a copy of any app's code or assets. Rename it freely (s
 - **Device** photos/videos via Android's MediaStore, grouped into albums (fast, native feel).
 - **Folder albums** for local folders and remote accounts — browse into any folder and see
   its media as a grid; remote image thumbnails download progressively (size-capped).
-- Full-screen viewer with **swipe** between items and **pinch-to-zoom** (photos and videos).
+- Full-screen viewer with **swipe** between items and **pinch-to-zoom** (photos and videos). A video's
+  player controls show and hide together with the viewer's top bar and filmstrip.
 - **Save what's on screen** (as in Samsung Gallery): zoom into a photo and tap the crop button to keep
   just that part as a new picture, or tap the camera button on a video to save the frame it's
   showing — only the zoomed-in part, if you've pinched in. They're cut from the full-size original,
